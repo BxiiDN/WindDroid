@@ -9,6 +9,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.method.ScrollingMovementMethod;
+import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
@@ -26,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
 public class MainActivity extends Activity implements Engine.Listener {
+    private static final String TAG = "WindDroid";
     private static final int REQ_IMAGE = 1;
     private static final long MAX_IMAGE = 512L << 20;
     private static final int MAX_TERMINAL_CHARS = 120_000;
@@ -43,6 +45,8 @@ public class MainActivity extends Activity implements Engine.Listener {
     private SharedPreferences prefs;
     private boolean renderPosted;
     private String imageName = "";
+    private volatile boolean logOutput;
+    private final StringBuilder logLine = new StringBuilder();
 
     @Override
     protected void onCreate(Bundle state) {
@@ -88,6 +92,18 @@ public class MainActivity extends Activity implements Engine.Listener {
         updateRamButton();
         setStatus(getString(R.string.status_idle, Engine.version()));
         appendText(getString(R.string.welcome));
+
+        // Automation hook used by the CI smoke test:
+        //   am start -n com.bxiidn.winddroid/.MainActivity --ez autorun true --es input 'selftest;poweroff'
+        Intent it = getIntent();
+        if (it != null && it.getBooleanExtra("autorun", false)) {
+            logOutput = true;
+            startDemo();
+            String script = it.getStringExtra("input");
+            if (script != null) {
+                for (String cmd : script.split(";")) sendText(cmd.trim() + "\r");
+            }
+        }
     }
 
     @Override
@@ -233,7 +249,19 @@ public class MainActivity extends Activity implements Engine.Listener {
 
     @Override
     public void onOutput(byte[] data) {
-        appendText(new String(data, StandardCharsets.ISO_8859_1));
+        String s = new String(data, StandardCharsets.ISO_8859_1);
+        if (logOutput) {
+            for (int i = 0; i < s.length(); i++) {
+                char c = s.charAt(i);
+                if (c == '\n') {
+                    Log.i(TAG, logLine.toString());
+                    logLine.setLength(0);
+                } else if (c != '\r') {
+                    logLine.append(c);
+                }
+            }
+        }
+        appendText(s);
     }
 
     @Override
@@ -257,6 +285,7 @@ public class MainActivity extends Activity implements Engine.Listener {
             }
             appendText("\n--- " + msg + " ---\n");
             if (!detail.isEmpty()) appendText(detail + "\n");
+            if (logOutput) Log.i(TAG, "STOPPED status=" + st + " exit=" + exitCode + " " + msg + " " + detail);
             setStatus(msg);
         });
     }

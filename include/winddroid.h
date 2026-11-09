@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define WD_VERSION "0.1.0"
+#define WD_VERSION "0.1.1"
 
 typedef struct wd_machine wd_machine;
 

@@ -151,7 +151,7 @@ uint64_t wd_ctl_read(wd_machine *m, uint64_t off)
     case 0x08: return m->cpu.icount;
     case 0x10: return mono_ns();
     case 0x18: return m->ram_size;
-    case 0x20: return 0x000100;                 /* 0.1.0 */
+    case 0x20: return 0x000101;                 /* 0.1.1 */
     default: return 0;
     }
 }

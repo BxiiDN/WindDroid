@@ -12,8 +12,12 @@ permissions:
 
 jobs:
   test:
-    name: Engine tests
-    runs-on: ubuntu-24.04
+    name: Engine tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
@@ -21,8 +25,10 @@ jobs:
       - name: Build engine and guest programs, run all tests
         run: make test
       - name: Mutation testing (injected bugs must be detected)
+        if: matrix.os == 'ubuntu-24.04'
         run: python3 tests/mutation_test.py
       - name: Upload guest programs
+        if: matrix.os == 'ubuntu-24.04'
         uses: actions/upload-artifact@v4
         with:
           name: guests
@@ -70,12 +76,44 @@ jobs:
           name: WindDroid-apk
           path: dist/*.apk
 
+  android-smoke:
+    name: APK on Android emulator
+    needs: apk
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: WindDroid-apk
+          path: dist
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Boot emulator, install APK, run the monitor through the app
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash .github/smoke_test.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-smoke-logs
+          path: |
+            guest.log
+            crash.log
+
   release:
     # A release is published for every new version: either a pushed v* tag, or a
     # push to main whose VERSION file names a version that has no release yet.
     name: GitHub Release
     if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
-    needs: apk
+    needs: [apk, android-smoke]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

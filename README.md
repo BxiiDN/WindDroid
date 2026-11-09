@@ -4,7 +4,7 @@ Mesin virtual **AArch64** yang ditulis dari nol untuk Android, dengan tujuan jan
 
 Pendekatannya sama dengan [Henge](https://github.com/Leviidev/Henge) (macOS di iPhone/iPad): aplikasi Android tidak boleh memakai hypervisor (EL2 sudah dipakai firmware Qualcomm), jadi WindDroid membawa CPU, MMU, dan perangkatnya sendiri. Peta memori dan perangkatnya mengikuti mesin `virt` milik QEMU, yang sudah terbukti bisa mem-boot Windows ARM lewat UEFI.
 
-> **Status jujur (v0.1.0):** engine CPU/MMU/interupsi sudah berjalan dan teruji ketat, dan APK-nya bisa menjalankan program AArch64 bare-metal. **Windows belum bisa di-boot.** Bagian yang masih kurang tercantum di [Peta jalan](#peta-jalan-menuju-windows).
+> **Status jujur (v0.1.1):** engine CPU/MMU/interupsi sudah berjalan dan teruji ketat, dan APK-nya bisa menjalankan program AArch64 bare-metal. **Windows belum bisa di-boot.** Bagian yang masih kurang tercantum di [Peta jalan](#peta-jalan-menuju-windows).
 
 ## Isi repo
 
