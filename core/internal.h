@@ -120,6 +120,7 @@ typedef struct {
     uint8_t *mem;
     uint64_t size;
     int mode, readonly, dirty;
+    uint64_t used;           /* bytes worth saving: initial image or highest written offset */
     uint32_t status;
     uint64_t wb_addr;
     unsigned wb_words, wb_len;

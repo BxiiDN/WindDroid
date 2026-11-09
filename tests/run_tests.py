@@ -47,6 +47,8 @@ FW_TESTS = [
     ("uefi_vars_reload", ["-s", "Press any key"], ["Press any key to enter the Boot Manager Menu"]),
     ("uefi_gop", ["-s", "Please select boot device", "-k", "Press any key=\\r", "-F", "{screen}"],
      ["Please select boot device"]),
+    ("uefi_usb_kbd", ["-U", "-s", "Please select boot device", "-K", "Press any key=\\r"],
+     ["Press any key to enter the Boot Manager Menu", "Please select boot device"]),
 ]
 
 
@@ -157,19 +159,23 @@ def esp_file(raw_path, name):
         return None
 
 
+DISK_TESTS = 6
+
+
 def run_disk_tests(vm, quiet, timeout):
     import shutil
     import tempfile
     tool = os.path.join(ROOT, "build", "disktool")
     failed = []
     with tempfile.TemporaryDirectory() as d:
-        def boot(name, disks, want, verify):
+        def boot(name, disks, want, verify, extra=()):
             vars_path = os.path.join(d, "vars.fd")
             shutil.copy(os.path.join(FW, "QEMU_VARS.fd"), vars_path)
             cmd = [vm, "-q", "-m", "1024", "-n", "60000000000", "-b", os.path.join(FW, "QEMU_EFI.fd"),
                    "-v", vars_path]
             for disk in disks:
-                cmd += ["-D", disk]
+                cmd += disk if isinstance(disk, list) else ["-D", disk]
+            cmd += list(extra)
             t0 = time.time()
             try:
                 p = subprocess.run(cmd, capture_output=True, timeout=timeout)
@@ -235,6 +241,36 @@ def run_disk_tests(vm, quiet, timeout):
         boot("nvme_readonly", ["ro:" + raw3], ["UEFI Interactive Shell", "Hello from the NVMe disk",
                                                "failed to open with create", "SCRIPT-DONE"],
              verify_ro)
+
+        # USB keyboard: commands typed on the emulated keyboard reach the UEFI Shell
+        kb = os.path.join(d, "kb.img")
+        fatdisk.create(kb, 64, [("EFI/BOOT/BOOTAA64.EFI", open(os.path.join(FW, "Shell.efi"), "rb").read())])
+        boot("usb_keyboard", [kb], ["Generic Usb Keyboard", "eXtensible Host Controller", "KBD-TYPED-OK"],
+             lambda: [], ["-K", "Shell>=set X KBD\recho %X%-TYPED-OK\rdevices\rreset -s\r"])
+
+        # USB DVD drive: boot an ISO with a Windows-style El Torito catalog, copy a file to NVMe
+        import isoimage
+        script = ("echo -off\r\nif exist fs0:\\target.txt then\r\n  cp fs1:\\big.bin fs0:\\big.bin\r\n"
+                  "else\r\n  cp fs0:\\big.bin fs1:\\big.bin\r\nendif\r\necho USB-CD-DONE\r\nreset -s\r\n")
+        efi = fatdisk.fat_image(16 << 20, [("EFI/BOOT/BOOTAA64.EFI", open(os.path.join(FW, "Shell.efi"), "rb").read()),
+                                           ("startup.nsh", script.encode()), ("big.bin", big)])
+        iso = os.path.join(d, "test.iso")
+        isoimage.build(iso, efi, [("readme.txt", b"iso\r\n")])
+        target = os.path.join(d, "target.img")
+        fatdisk.create(target, 64, [("target.txt", b"x")])
+        boot("usb_cdrom", [target, ["-c", iso]], ["UEFI WindDroid WindDroid USB DVD-ROM", "CDROM(0x1)", "USB-CD-DONE"],
+             lambda: [] if esp_file(target, "big.bin") == big else ["file copied from the DVD differs"])
+
+        # USB disk: copy in both directions
+        script = ("echo -off\r\ncp fs0:\\big.bin fs1:\\up.bin\r\ncp fs1:\\down.txt fs0:\\down.txt\r\n"
+                  "echo USB-DISK-DONE\r\nreset -s\r\n")
+        bootd = os.path.join(d, "boot.img")
+        make_shell_disk(bootd, script=script)
+        usb = os.path.join(d, "usb.img")
+        fatdisk.create(usb, 24, [("down.txt", b"from the USB disk\r\n")], fat16=True)
+        boot("usb_disk", [bootd, ["-u", usb]], ["USB-DISK-DONE"],
+             lambda: ([] if esp_file(usb, "up.bin") == big else ["file written to the USB disk differs"]) +
+                     ([] if esp_file(bootd, "down.txt") == b"from the USB disk\r\n" else ["file read from the USB disk differs"]))
     return failed
 
 
@@ -245,9 +281,14 @@ def main():
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--timeout", type=float, default=120)
     ap.add_argument("--no-firmware", action="store_true")
+    ap.add_argument("--only-disks", action="store_true", help="run only the UEFI disk and USB tests")
     args = ap.parse_args()
 
     failed = []
+    if args.only_disks:
+        failed = run_disk_tests(args.vm, args.quiet, max(args.timeout, 300))
+        print(f"{DISK_TESTS - len(failed)}/{DISK_TESTS} tests passed")
+        return 1 if failed else 0
     for name, extra, want in TESTS:
         elf = os.path.join(args.guests, name + ".elf")
         cmd = [args.vm, "-q", "-n", "400000000"] + extra + [elf]
@@ -273,7 +314,7 @@ def main():
         failed += run_fw_tests(args.vm, args.quiet, max(args.timeout, 300))
         total += len(FW_TESTS)
         failed += run_disk_tests(args.vm, args.quiet, max(args.timeout, 300))
-        total += 3
+        total += DISK_TESTS
         acpiexec = os.environ.get("ACPIEXEC") or os.path.join(ROOT, "..", "ext", "acpica", "generate", "unix", "bin", "acpiexec")
         if os.path.exists(acpiexec):
             total += 1

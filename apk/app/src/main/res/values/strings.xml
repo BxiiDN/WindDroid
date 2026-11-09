@@ -17,5 +17,26 @@
     <string name="stopped_reset">Guest meminta reset; tekan Jalankan lagi</string>
     <string name="stopped_error">Emulator berhenti karena galat internal</string>
     <string name="stopped_user">Dihentikan</string>
-    <string name="welcome">WindDroid - mesin virtual AArch64 (peta memori QEMU virt: GICv3, PL011, timer generik, PSCI).\n\nTekan \"Jalankan Monitor\" untuk program demo bawaan, atau \"Muat image\" untuk menjalankan ELF/biner AArch64 bare-metal milik Anda (dimuat di 0x40000000 jika biner mentah).\n\nCatatan: versi ini belum bisa mem-boot Windows. Lihat README untuk peta jalan.\n</string>
+    <string name="btn_vm">▶ Mulai VM UEFI / Windows</string>
+    <string name="btn_disk">Disk sistem…</string>
+    <string name="btn_iso">ISO installer…</string>
+    <string name="btn_newdisk">Buat disk baru…</string>
+    <string name="btn_vm_ram">RAM VM: %1$d MB</string>
+    <string name="btn_reset_vars">Reset NVRAM</string>
+    <string name="btn_console">Konsol</string>
+    <string name="vm_section">Mesin virtual UEFI (Windows ARM64)</string>
+    <string name="vm_disk_label">Disk sistem (NVMe): %1$s</string>
+    <string name="vm_iso_label">DVD installer (USB): %1$s</string>
+    <string name="none">(tidak ada)</string>
+    <string name="remove">Lepas</string>
+    <string name="vm_off">Mesin virtual dimatikan oleh sistem tamu.</string>
+    <string name="vm_reset">Sistem tamu meminta restart. Mulai VM lagi untuk melanjutkan.</string>
+    <string name="vm_confirm_stop">Matikan mesin virtual sekarang? Data yang belum disimpan oleh sistem tamu bisa hilang.</string>
+    <string name="newdisk_title">Ukuran disk baru (VHDX dinamis, tumbuh sesuai isi)</string>
+    <string name="newdisk_ok">Disk %1$s dibuat (%2$d GB) dan dipasang sebagai disk sistem.</string>
+    <string name="newdisk_fail">Gagal membuat disk di lokasi itu. Pilih folder di penyimpanan internal.</string>
+    <string name="vars_reset">NVRAM UEFI dikembalikan ke bawaan.</string>
+    <string name="err_permission">Izin akses ke %1$s hilang; pilih filenya lagi.</string>
+    <string name="disk_format">%1$s (%2$s)</string>
+    <string name="welcome">WindDroid - mesin virtual AArch64 (peta memori QEMU virt: GICv3, PL011, timer generik, PSCI).\n\nTekan \"Jalankan Monitor\" untuk program demo bawaan, atau \"Muat image\" untuk menjalankan ELF/biner AArch64 bare-metal milik Anda (dimuat di 0x40000000 jika biner mentah).\n\nMesin virtual UEFI: pilih \"Disk sistem\" (VHDX/VHD/IMG, misalnya VHDX Windows 11 ARM64 dari Microsoft) dan/atau \"ISO installer\" (ISO Windows 11 ARM64), lalu tekan \"Mulai VM\". Untuk instal dari ISO, buat dulu disk kosong dengan \"Buat disk baru\". Firmware EDK2 (UEFI), NVMe, USB DVD, keyboard dan tablet USB, dan layar sudah diemulasikan; mem-boot Windows sampai desktop belum diuji dan masih sangat lambat tanpa JIT.\n</string>
 </resources>

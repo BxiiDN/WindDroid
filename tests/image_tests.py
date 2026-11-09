@@ -132,6 +132,39 @@ def validate_vhdx(path, size, block, sector):
     return errs
 
 
+def vhd_checksum(b):
+    return (~sum(b)) & 0xFFFFFFFF
+
+
+def make_dynamic_vhd(path, size, block, blocks):
+    """Dynamic VHD (Virtual Hard Disk Image Format Specification v1.0) with given allocated
+    blocks {index: (bitmap bytes, data bytes)}; built here independently of the C code."""
+    footer = bytearray(512)
+    footer[0:8] = b"conectix"
+    struct.pack_into(">IIQI", footer, 8, 2, 0x00010000, 512, 0)
+    footer[28:32] = b"wdt "
+    struct.pack_into(">I4sQQIII", footer, 32, 0x00010000, b"Wi2k", size, size, 0, 3, 0)
+    footer[68:84] = bytes(range(16))
+    struct.pack_into(">I", footer, 64, vhd_checksum(footer))
+    entries = -(-size // block)
+    bat_off = 512 + 1024
+    bat_size = (entries * 4 + 511) // 512 * 512
+    dyn = bytearray(1024)
+    dyn[0:8] = b"cxsparse"
+    struct.pack_into(">QQIII", dyn, 8, 0xFFFFFFFFFFFFFFFF, bat_off, 0x00010000, entries, block)
+    struct.pack_into(">I", dyn, 36, vhd_checksum(dyn))
+    bat = bytearray(b"\xff" * bat_size)
+    body = b""
+    pos = bat_off + bat_size
+    bm_size = (block // 512 // 8 + 511) // 512 * 512
+    for idx, (bitmap, data) in sorted(blocks.items()):
+        struct.pack_into(">I", bat, 4 * idx, pos // 512)
+        body += bitmap.ljust(bm_size, b"\0") + data
+        pos += bm_size + block
+    with open(path, "wb") as f:
+        f.write(footer + dyn + bat + body + footer)
+
+
 def main():
     if not os.path.exists(TOOL):
         print("build/disktool missing (run make)")
@@ -198,6 +231,28 @@ def main():
         ok("vhd_read_after", "check", img, 4000000, "100M", 0)
         ok("vhd_read_far", "check", img, "100G", "1M", 0x33)
 
+        # --- VHD with a partially present block: sectors without their bitmap bit read as zero
+        block = 2 * M
+        data = bytes((i * 13 + 1) & 0xFF or 1 for i in range(block))   # no zero bytes
+        bitmap = bytearray(block // 512 // 8)
+        for sec in list(range(0, 8)) + list(range(100, 140)) + [4095]:
+            bitmap[sec // 8] |= 0x80 >> (sec % 8)
+        vhdp = os.path.join(d, "partial.vhd")
+        make_dynamic_vhd(vhdp, 64 * M, block, {3: (bytes(bitmap), data)})
+        p = subprocess.run([TOOL, "dump", vhdp, str(3 * block), str(block)], capture_output=True)
+        expect = bytearray(block)
+        for sec in list(range(0, 8)) + list(range(100, 140)) + [4095]:
+            expect[sec * 512:(sec + 1) * 512] = data[sec * 512:(sec + 1) * 512]
+        check("vhd_partial_bitmap_read", p.returncode == 0 and p.stdout == bytes(expect), "contents differ")
+        ok("vhd_partial_zero_elsewhere", "check", vhdp, 0, 3 * block, 0)
+        # writing into a sector that was not present must not expose the old bytes around it
+        ok("vhd_partial_write", "fill", vhdp, 3 * block + 50 * 512 + 100, 10, 0x42)
+        p = subprocess.run([TOOL, "dump", vhdp, str(3 * block + 50 * 512), "512"], capture_output=True)
+        check("vhd_partial_write_sector", p.stdout == bytes(100) + b"\x42" * 10 + bytes(402), repr(p.stdout[:120]))
+        p = subprocess.run([TOOL, "dump", vhdp, str(3 * block), str(block)], capture_output=True)
+        expect[50 * 512 + 100:50 * 512 + 110] = b"\x42" * 10
+        check("vhd_partial_rest_kept", p.stdout == bytes(expect), "contents differ")
+
         # --- VHDX we create
         for size, block, sector in ((200 * M, 1 * M, 512), (200 * M, 2 * M, 4096), (64 << 30, 32 * M, 512)):
             img = os.path.join(d, "new.vhdx")
@@ -210,6 +265,28 @@ def main():
             ok("vhdx_new_fuzz", "fuzz", img, 3, 4000)
             errs = validate_vhdx(img, size, block, sector)
             check("vhdx_structure_after_writes", not errs, ", ".join(errs))
+
+        # --- a block beyond the first BAT chunk lands where [MS-VHDX] 2.5.1 puts its BAT entry
+        img = os.path.join(d, "far.vhdx")
+        ok("vhdx_far_create", "create", img, 64 << 30, 32 * M, 512)
+        ok("vhdx_far_fill", "fill", img, 40 << 30, M, 0x5A)
+        ok("vhdx_far_fill2", "fill", img, (40 << 30) + 32 * M * 128 - 4096, 8192, 0x6B)
+        raw = open(img, "rb").read()
+        chunk = (1 << 23) * 512 // (32 * M)
+        bat_off = 3 * M
+        errs = []
+        for vaddr, pat in (((40 << 30), 0x5A), ((40 << 30) + 32 * M * 128 - 4096, 0x6B), ((40 << 30) + 32 * M * 128, 0x6B)):
+            blk = vaddr // (32 * M)
+            ent = struct.unpack_from("<Q", raw, bat_off + 8 * (blk + blk // chunk))[0]
+            if ent & 7 != 6:
+                errs.append(f"block {blk} not fully present in the BAT ({ent:#x})")
+                continue
+            off = (ent >> 20) * M + vaddr % (32 * M)
+            if raw[off:off + 4096] != bytes([pat]) * 4096:
+                errs.append(f"block {blk} data not at its BAT offset")
+        check("vhdx_far_bat_layout", not errs, "; ".join(errs))
+        ok("vhdx_far_read", "check", img, 40 << 30, M, 0x5A)
+        ok("vhdx_far_zero", "check", img, (40 << 30) + M, 64 * M, 0)
 
         # --- raw and ISO detection
         raw = os.path.join(d, "disk.img")

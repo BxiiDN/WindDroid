@@ -20,6 +20,9 @@ add_library(winddroid SHARED
     ${WD_ROOT}/devices/disk.c
     ${WD_ROOT}/devices/nvme.c
     ${WD_ROOT}/devices/image.c
+    ${WD_ROOT}/devices/usb.c
+    ${WD_ROOT}/devices/usb_storage.c
+    ${WD_ROOT}/devices/xhci.c
     ${WD_ROOT}/host/machine.c
     ${WD_ROOT}/host/platform.c
     ${WD_ROOT}/host/fdt.c
@@ -27,4 +30,4 @@ add_library(winddroid SHARED
 
 target_include_directories(winddroid PRIVATE ${WD_ROOT}/include ${WD_ROOT}/core)
 target_compile_options(winddroid PRIVATE -O2 -frounding-math -std=c11 -D_GNU_SOURCE -Wall -Wno-unused-parameter)
-target_link_libraries(winddroid log m)
+target_link_libraries(winddroid log m jnigraphics)

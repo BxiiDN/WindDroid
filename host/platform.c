@@ -191,9 +191,14 @@ int wd_load_firmware(wd_machine *m, const uint8_t *code, size_t code_len, const 
 const uint8_t *wd_firmware_vars(wd_machine *m, size_t *len, int *dirty)
 {
     if (!m->firmware) return NULL;
-    *len = WD_FLASH_SIZE;
+    *len = (size_t)m->flash[1].used;
     if (dirty) *dirty = m->flash[1].dirty;
     return m->flash[1].mem;
+}
+
+void wd_firmware_vars_saved(wd_machine *m)
+{
+    m->flash[1].dirty = 0;
 }
 
 const uint8_t *wd_get_dtb(wd_machine *m, size_t *len)

@@ -17,6 +17,10 @@
  *     -I             forward standard input to the serial port (interactive console)
  *     -k TEXT=INPUT  type INPUT on the serial port once TEXT has appeared (\\n, \\r, \\e escapes)
  *     -D FILE        attach a disk image (raw/IMG, VHDX, VHD) as an NVMe SSD; "ro:FILE" opens it read-only
+ *     -c FILE        attach an ISO image as a USB DVD drive
+ *     -u FILE        attach a disk image as a USB disk ("ro:FILE" read-only)
+ *     -U             attach a USB keyboard and a USB tablet
+ *     -K TEXT=INPUT  type INPUT on the USB keyboard once TEXT has appeared on the serial port
  *
  * Exit status: guest exit code (control device), 0 after PSCI SYSTEM_OFF,
  * 124 when the instruction limit is reached, 125 when the guest is idle
@@ -87,7 +91,24 @@ static uint8_t *read_file(const char *path, size_t *len)
 
 #define MAX_DISKS 8
 static const char *disks[MAX_DISKS];
-static int ndisks;
+static int disk_kind[MAX_DISKS];
+static int ndisks, usb_hid;
+static int key_usb[MAX_KEYS];
+/* pending USB keystrokes: one key change per run slice so the guest sees every report */
+static int usb_type_ev[4096][2];
+static int usb_type_n, usb_type_pos;
+
+static void usb_type_queue(const char *text, size_t n)
+{
+    for (size_t i = 0; i < n && usb_type_n + 4 <= 4096; i++) {
+        int shift, u = wd_ascii_to_hid((unsigned char)text[i], &shift);
+        if (!u) continue;
+        if (shift) { usb_type_ev[usb_type_n][0] = 0xE1; usb_type_ev[usb_type_n++][1] = 1; }
+        usb_type_ev[usb_type_n][0] = u; usb_type_ev[usb_type_n++][1] = 1;
+        usb_type_ev[usb_type_n][0] = u; usb_type_ev[usb_type_n++][1] = 0;
+        if (shift) { usb_type_ev[usb_type_n][0] = 0xE1; usb_type_ev[usb_type_n++][1] = 0; }
+    }
+}
 
 static double now_s(void)
 {
@@ -102,7 +123,7 @@ int main(int argc, char **argv)
     int realtime = 0, trace = 0, quiet = 0, opt, interactive = 0;
     const char *input = NULL, *bios = NULL, *vars_path = NULL, *dtb_path = NULL, *fb_path = NULL, *acpi_dir = NULL;
 
-    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:IF:A:D:")) != -1) {
+    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:IF:A:D:c:u:UK:")) != -1) {
         switch (opt) {
         case 'm': ram_mb = strtoull(optarg, NULL, 0); break;
         case 'n': limit = strtoull(optarg, NULL, 0); break;
@@ -117,9 +138,16 @@ int main(int argc, char **argv)
         case 'I': interactive = 1; realtime = 1; break;
         case 'F': fb_path = optarg; break;
         case 'A': acpi_dir = optarg; break;
-        case 'D':
-            if (ndisks < MAX_DISKS) disks[ndisks++] = optarg;
+        case 'D': case 'c': case 'u':
+            if (ndisks < MAX_DISKS) { disks[ndisks] = optarg; disk_kind[ndisks++] = opt; }
             break;
+        case 'U': usb_hid = 1; break;
+        case 'K': {
+            char *eq = strchr(optarg, '=');
+            if (eq && nkeys < MAX_KEYS) { *eq = 0; key_after[nkeys] = optarg; key_input[nkeys] = eq + 1; key_usb[nkeys++] = 1; }
+            usb_hid = 1;
+            break;
+        }
         case 'k': {
             char *eq = strchr(optarg, '=');
             if (eq && nkeys < MAX_KEYS) { *eq = 0; key_after[nkeys] = optarg; key_input[nkeys++] = eq + 1; }
@@ -167,6 +195,7 @@ int main(int argc, char **argv)
         const char *path = disks[i];
         int ro = strncmp(path, "ro:", 3) == 0;
         if (ro) path += 3;
+        if (disk_kind[i] == 'c') ro = 1;
         int fd = open(path, ro ? O_RDONLY : O_RDWR);
         if (fd < 0) { perror(path); return 2; }
         wd_disk d;
@@ -175,10 +204,15 @@ int main(int argc, char **argv)
             fprintf(stderr, "%s: %s\n", path, err);
             return 2;
         }
-        if (wd_attach_nvme(m, &d) != 0) {
+        int r = disk_kind[i] == 'D' ? wd_attach_nvme(m, &d) : wd_attach_usb_storage(m, &d, disk_kind[i] == 'c');
+        if (r != 0) {
             fprintf(stderr, "%s: %s\n", path, wd_error(m));
             return 2;
         }
+    }
+    if (usb_hid && (wd_attach_usb_keyboard(m) || wd_attach_usb_tablet(m))) {
+        fprintf(stderr, "USB: %s\n", wd_error(m));
+        return 2;
     }
     if (acpi_dir) {
         const char *names[] = { "etc/acpi/tables", "etc/acpi/rsdp", "etc/table-loader" };
@@ -240,6 +274,11 @@ int main(int argc, char **argv)
             if (executed >= limit) { status = 124; why = "instruction limit"; break; }
             if (limit - executed < chunk) chunk = limit - executed;
         }
+        if (usb_type_pos < usb_type_n) {
+            wd_key_event(m, usb_type_ev[usb_type_pos][0], usb_type_ev[usb_type_pos][1]);
+            usb_type_pos++;
+            if (chunk > 300000) chunk = 300000;
+        }
         wd_run_result r = wd_run(m, chunk);
         if (stop_hit) { status = 0; why = "stop text seen"; break; }
         if (key_due) {
@@ -251,7 +290,8 @@ int main(int argc, char **argv)
                 else if (p[0] == '\\' && p[1] == 'e') { buf[n++] = 27; p++; }
                 else buf[n++] = *p;
             }
-            wd_uart_input(m, (const uint8_t *)buf, n);
+            if (key_usb[key_idx]) usb_type_queue(buf, n);
+            else wd_uart_input(m, (const uint8_t *)buf, n);
             key_due = 0;
             key_pos = 0;
             key_idx++;

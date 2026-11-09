@@ -119,3 +119,127 @@ JNIEXPORT jstring JNICALL Java_com_bxiidn_winddroid_Engine_nativeVersion(JNIEnv 
 {
     return (*env)->NewStringUTF(env, WD_VERSION);
 }
+
+/* ---------------------------------------------------------------- UEFI machine */
+
+#include <android/bitmap.h>
+#include <unistd.h>
+
+JNIEXPORT jstring JNICALL Java_com_bxiidn_winddroid_Engine_nativeLoadFirmware(JNIEnv *env, jclass cls, jlong p,
+                                                                              jbyteArray code, jbyteArray vars)
+{
+    handle *h = H(p);
+    jsize cn = (*env)->GetArrayLength(env, code);
+    jbyte *cb = (*env)->GetByteArrayElements(env, code, NULL);
+    jsize vn = vars ? (*env)->GetArrayLength(env, vars) : 0;
+    jbyte *vb = vars ? (*env)->GetByteArrayElements(env, vars, NULL) : NULL;
+    int r = cb ? wd_load_firmware(h->m, (const uint8_t *)cb, (size_t)cn, (const uint8_t *)vb, (size_t)vn) : -1;
+    if (cb) (*env)->ReleaseByteArrayElements(env, code, cb, JNI_ABORT);
+    if (vb) (*env)->ReleaseByteArrayElements(env, vars, vb, JNI_ABORT);
+    return r ? (*env)->NewStringUTF(env, wd_error(h->m)) : NULL;
+}
+
+/* kind: 0 NVMe SSD, 1 USB disk, 2 USB DVD drive. The engine owns fd afterwards (also on failure). */
+JNIEXPORT jstring JNICALL Java_com_bxiidn_winddroid_Engine_nativeAttachDisk(JNIEnv *env, jclass cls, jlong p, jint fd,
+                                                                            jint kind, jboolean readonly)
+{
+    handle *h = H(p);
+    wd_disk d;
+    char err[256];
+    if (wd_disk_open_image(fd, readonly || kind == 2, 1, &d, err, sizeof err)) {
+        close(fd);
+        return (*env)->NewStringUTF(env, err);
+    }
+    int r;
+    if (kind == 0) r = wd_attach_nvme(h->m, &d);
+    else r = wd_attach_usb_storage(h->m, &d, kind == 2);
+    if (r) {
+        d.close(d.opaque);
+        return (*env)->NewStringUTF(env, wd_error(h->m));
+    }
+    return NULL;
+}
+
+JNIEXPORT jint JNICALL Java_com_bxiidn_winddroid_Engine_nativeImageFormat(JNIEnv *env, jclass cls, jint fd)
+{
+    return wd_image_probe(fd);
+}
+
+JNIEXPORT jint JNICALL Java_com_bxiidn_winddroid_Engine_nativeCreateVhdx(JNIEnv *env, jclass cls, jint fd, jlong size)
+{
+    int r = wd_vhdx_create(fd, (uint64_t)size, 0, 0);
+    close(fd);
+    return r;
+}
+
+JNIEXPORT jint JNICALL Java_com_bxiidn_winddroid_Engine_nativeAttachUsbInput(JNIEnv *env, jclass cls, jlong p)
+{
+    handle *h = H(p);
+    return wd_attach_usb_keyboard(h->m) || wd_attach_usb_tablet(h->m) ? -1 : 0;
+}
+
+JNIEXPORT void JNICALL Java_com_bxiidn_winddroid_Engine_nativeKey(JNIEnv *env, jclass cls, jlong p, jint usage, jboolean down)
+{
+    wd_key_event(H(p)->m, usage, down ? 1 : 0);
+}
+
+JNIEXPORT void JNICALL Java_com_bxiidn_winddroid_Engine_nativePointer(JNIEnv *env, jclass cls, jlong p, jint x, jint y,
+                                                                      jint buttons, jint wheel)
+{
+    wd_pointer_event(H(p)->m, x, y, buttons, wheel);
+}
+
+JNIEXPORT jint JNICALL Java_com_bxiidn_winddroid_Engine_nativeAsciiToHid(JNIEnv *env, jclass cls, jint ch)
+{
+    int shift, u = wd_ascii_to_hid(ch, &shift);
+    return u | (shift ? 0x100 : 0);
+}
+
+/* out = { width, height, generation }; returns 0 while no mode is set */
+JNIEXPORT jint JNICALL Java_com_bxiidn_winddroid_Engine_nativeFbInfo(JNIEnv *env, jclass cls, jlong p, jintArray out)
+{
+    wd_fb_info fb;
+    if (!wd_framebuffer(H(p)->m, &fb)) return 0;
+    jint v[3] = { (jint)fb.width, (jint)fb.height, (jint)fb.generation };
+    (*env)->SetIntArrayRegion(env, out, 0, 3, v);
+    return 1;
+}
+
+/* Copy the guest framebuffer (XRGB8888, B,G,R,X in memory) into an ARGB_8888 bitmap (R,G,B,A). */
+JNIEXPORT jint JNICALL Java_com_bxiidn_winddroid_Engine_nativeBlit(JNIEnv *env, jclass cls, jlong p, jobject bitmap)
+{
+    wd_fb_info fb;
+    if (!wd_framebuffer(H(p)->m, &fb)) return 0;
+    AndroidBitmapInfo bi;
+    void *px;
+    if (AndroidBitmap_getInfo(env, bitmap, &bi) != ANDROID_BITMAP_RESULT_SUCCESS ||
+        bi.format != ANDROID_BITMAP_FORMAT_RGBA_8888 || bi.width != fb.width || bi.height != fb.height)
+        return 0;
+    if (AndroidBitmap_lockPixels(env, bitmap, &px) != ANDROID_BITMAP_RESULT_SUCCESS) return 0;
+    for (uint32_t y = 0; y < fb.height; y++) {
+        const uint32_t *src = (const uint32_t *)(fb.pixels + (size_t)y * fb.stride);
+        uint32_t *dst = (uint32_t *)((uint8_t *)px + (size_t)y * bi.stride);
+        for (uint32_t x = 0; x < fb.width; x++) {
+            uint32_t v = src[x];                                   /* 0xXXRRGGBB */
+            dst[x] = 0xFF000000u | (v & 0x0000FF00u) | (v >> 16 & 0xFFu) | (v & 0xFFu) << 16;   /* 0xAABBGGRR */
+        }
+    }
+    AndroidBitmap_unlockPixels(env, bitmap);
+    return 1;
+}
+
+/* The variable store when it changed since the last call, else null. */
+JNIEXPORT jbyteArray JNICALL Java_com_bxiidn_winddroid_Engine_nativeTakeVars(JNIEnv *env, jclass cls, jlong p, jboolean force)
+{
+    handle *h = H(p);
+    size_t len;
+    int dirty;
+    const uint8_t *v = wd_firmware_vars(h->m, &len, &dirty);
+    if (!v || (!dirty && !force)) return NULL;
+    jbyteArray a = (*env)->NewByteArray(env, (jsize)len);
+    if (a) {
+        (*env)->SetByteArrayRegion(env, a, 0, (jsize)len, (const jbyte *)v);
+        wd_firmware_vars_saved(h->m);
+    }
+    return a;
+}

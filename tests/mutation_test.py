@@ -82,11 +82,47 @@ MUTANTS = [
      "else if (!tbx) res[i] = 0;", ";"),
     ("SIMD: rounding shift right not rounding", "core/simd.c",
      "            if (opc & 4) v += (__int128)1 << (rsh - 1);", "            ;"),
+    # disk images
+    ("VHDX: BAT index ignores sector bitmap entries", "devices/image.c",
+     "    return block + block / v->chunk_ratio;", "    return block;"),
+    ("VHDX: log data sector leading bytes misplaced", "devices/image.c",
+     "memcpy(sec, d + 8, 8);                    /* leading bytes */", "memcpy(sec, d + 4, 8);"),
+    ("VHDX: log replay skipped", "devices/image.c",
+     "        if (vhdx_replay_log(v, err, errlen)) goto fail;", "        ;"),
+    ("VHD: sector bitmap ignored", "devices/image.c",
+     "            if (bits[sec / 8] & (0x80 >> (sec % 8))) {", "            if (1) {"),
+    ("VHD: newly present sector not cleared", "devices/image.c",
+     "                    if (pwrite_all(v->fd, z, 512, sec_off)) return -1;", "                    ;"),
+    # USB devices
+    ("USB storage: CSW residue always zero", "devices/usb_storage.c",
+     "        uint32_t residue = s->host_len - moved;", "        uint32_t residue = 0;"),
+    ("USB storage: no padding of short data", "devices/usb_storage.c",
+     "        memset(buf + n, 0, want - n);                     /* pad up to what the host announced */\n        s->done += want;\n        if (s->done >= s->host_len) s->phase = PH_CSW;\n        return (int)want;",
+     "        s->done += want;\n        if (s->done >= s->host_len) s->phase = PH_CSW;\n        return (int)n;"),
+    ("USB storage: partial OUT blocks dropped", "devices/usb_storage.c",
+     "        memcpy(s->stage + s->staged, buf, take);", "        memset(s->stage + s->staged, 0, take);"),
+    ("USB HID: modifiers ignored", "devices/usb.c",
+     "        uint8_t bit = (uint8_t)(1 << (usage - 0xE0));", "        uint8_t bit = 0;"),
+    ("USB HID: wLength not honoured", "devices/usb.c",
+     "    if (r > length) r = length;", "    ;"),
+    # firmware-level (NVMe, xHCI): checked by the UEFI disk and USB tests
+    ("NVMe: PRP2 ignored for two-page transfers", "devices/nvme.c",
+     "    if (rest <= PAGE) {", "    if (0) {", "fw"),
+    ("NVMe: completion phase tag not inverted on wrap", "devices/nvme.c",
+     "    if (++q->tail == q->size) { q->tail = 0; q->phase ^= 1; }", "    if (++q->tail == q->size) { q->tail = 0; }", "fw"),
+    ("xHCI: event ring cycle not toggled", "devices/xhci.c",
+     "        if (x->er_seg >= x->erstsz) { x->er_seg = 0; x->er_pcs ^= 1; }",
+     "        if (x->er_seg >= x->erstsz) { x->er_seg = 0; }", "fw"),
+    ("xHCI: link TRB toggle cycle ignored", "devices/xhci.c",
+     "        if (TRB_TYPE(t) == TR_LINK) {\n            if (t.control & TRB_TC) ccs ^= 1;",
+     "        if (TRB_TYPE(t) == TR_LINK) {\n            if (0) ccs ^= 1;", "fw"),
+    ("xHCI: port reset does not enable the port", "devices/xhci.c",
+     "    p->portsc |= PORTSC_PED | PORTSC_PRC;", "    p->portsc |= PORTSC_PRC;", "fw"),
 ]
 
 
 def run(cmd, cwd):
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=600)
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=1800)
 
 
 def main():
@@ -95,7 +131,9 @@ def main():
         work = os.path.join(tmp, "src")
         shutil.copytree(ROOT, work, ignore=shutil.ignore_patterns(".git", "apk", "build", "ext"))
         guests = os.path.join(ROOT, "guest", "build")
-        for desc, path, old, new in MUTANTS:
+        for mutant in MUTANTS:
+            desc, path, old, new = mutant[:4]
+            fw = len(mutant) > 4
             fpath = os.path.join(work, path)
             orig = open(fpath).read()
             if orig.count(old) != 1:
@@ -103,7 +141,7 @@ def main():
                 survived.append(desc + " (pattern missing)")
                 continue
             open(fpath, "w").write(orig.replace(old, new))
-            b = run(["make", "-s", "build/winddroid-vm", "build/unit_tests"], work)
+            b = run(["make", "-s", "build/winddroid-vm", "build/unit_tests", "build/disktool"], work)
             if b.returncode != 0:
                 print(f"KILL  {desc} (does not compile)")
             else:
@@ -111,7 +149,12 @@ def main():
                 t = run([sys.executable, os.path.join(work, "tests", "run_tests.py"), "--quiet", "--no-firmware",
                          "--vm", os.path.join(work, "build", "winddroid-vm"), "--guests", guests,
                          "--timeout", "60"], work)
-                if u.returncode != 0 or t.returncode != 0:
+                i = run([sys.executable, os.path.join(work, "tests", "image_tests.py")], work)
+                f = None
+                if fw and u.returncode == 0 and t.returncode == 0 and i.returncode == 0:
+                    f = run([sys.executable, os.path.join(work, "tests", "run_tests.py"), "--quiet", "--only-disks",
+                             "--vm", os.path.join(work, "build", "winddroid-vm"), "--timeout", "120"], work)
+                if u.returncode != 0 or t.returncode != 0 or i.returncode != 0 or (f is not None and f.returncode != 0):
                     print(f"KILL  {desc}")
                 else:
                     print(f"ALIVE {desc}  <-- not detected")

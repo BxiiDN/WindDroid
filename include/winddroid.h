@@ -116,8 +116,24 @@ int wd_vhdx_create(int fd, uint64_t size, uint32_t block_size, uint32_t sector_s
 /* Attach an NVMe SSD on the PCIe bus. Returns 0 on success. */
 int wd_attach_nvme(wd_machine *m, const wd_disk *disk);
 
-/* Current variable store (to persist it); returns NULL if not booting firmware. */
+/* USB (xHCI controller on PCIe, created on first use). The keyboard takes
+ * HID usage codes (USB HID Usage Tables, page 0x07; modifiers 0xE0..0xE7);
+ * the tablet takes absolute coordinates 0..32767 and buttons bit0 left,
+ * bit1 right, bit2 middle. A CD drive takes ISO images (2048-byte blocks). */
+int  wd_usb_add_xhci(wd_machine *m);
+int  wd_attach_usb_keyboard(wd_machine *m);
+int  wd_attach_usb_tablet(wd_machine *m);
+int  wd_attach_usb_storage(wd_machine *m, const wd_disk *disk, int cdrom);
+void wd_key_event(wd_machine *m, int hid_usage, int down);
+void wd_pointer_event(wd_machine *m, int x, int y, int buttons, int wheel);
+/* US layout: HID usage for an ASCII character (0 if none), *shift set when Shift is needed. */
+int  wd_ascii_to_hid(int ch, int *shift);
+
+/* Current variable store (to persist it); returns NULL if not booting firmware. The
+ * length covers the initial store and everything the firmware wrote. */
 const uint8_t *wd_firmware_vars(wd_machine *m, size_t *len, int *dirty);
+/* The host has stored the variable store: clears the dirty flag. */
+void wd_firmware_vars_saved(wd_machine *m);
 
 wd_run_result wd_run(wd_machine *m, uint64_t max_insns);
 

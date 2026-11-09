@@ -9,7 +9,7 @@ CFLAGS  += -frounding-math -std=c11 -D_GNU_SOURCE -Wall -Wextra -Wno-unused-para
 LDFLAGS ?=
 LDLIBS  := -lm
 
-ENGINE_SRC := core/cpu.c core/mmu.c core/sysreg.c core/simd.c core/fpu.c devices/gic.c devices/simple.c devices/flash.c devices/fwcfg.c devices/pci.c devices/ramfb.c devices/disk.c devices/nvme.c devices/image.c host/machine.c host/platform.c host/fdt.c host/acpi.c
+ENGINE_SRC := core/cpu.c core/mmu.c core/sysreg.c core/simd.c core/fpu.c devices/gic.c devices/simple.c devices/flash.c devices/fwcfg.c devices/pci.c devices/ramfb.c devices/disk.c devices/nvme.c devices/image.c devices/usb.c devices/usb_storage.c devices/xhci.c host/machine.c host/platform.c host/fdt.c host/acpi.c
 ENGINE_HDR := include/winddroid.h core/internal.h core/fpu.h host/fdt.h host/platform.h
 
 BUILD := build

@@ -43,6 +43,13 @@ android {
         }
     }
 
+    sourceSets {
+        main {
+            // UEFI firmware (EDK2 ArmVirtQemu) shipped as assets
+            assets.srcDirs += ["../../firmware"]
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17

@@ -86,11 +86,19 @@ uint64_t wd_flash_read(wd_machine *m, wd_flash *f, uint64_t off, int size)
     return v & wd_mask(8 * size);
 }
 
+static void touched(wd_flash *f, uint64_t end)
+{
+    f->dirty = 1;
+    end = (end + 0xFFFF) & ~0xFFFFULL;                         /* whole 64 KiB units */
+    if (end > f->size) end = f->size;
+    if (end > f->used) f->used = end;
+}
+
 static void wb_commit(wd_flash *f)
 {
     if (f->wb_addr + f->wb_len <= f->size) {
         memcpy(f->mem + f->wb_addr, f->wb, f->wb_len);
-        f->dirty = 1;
+        touched(f, f->wb_addr + f->wb_len);
     }
 }
 
@@ -101,7 +109,7 @@ void wd_flash_write(wd_machine *m, wd_flash *f, uint64_t off, int size, uint64_t
     case M_PROGRAM:                                           /* word program data */
         if (off + (uint64_t)size <= f->size && !f->readonly) {
             memcpy(f->mem + off, &val, (size_t)size);
-            f->dirty = 1;
+            touched(f, off + (uint64_t)size);
         }
         f->status = 0x80;
         set_mode(m, f, M_STATUS);
@@ -131,7 +139,7 @@ void wd_flash_write(wd_machine *m, wd_flash *f, uint64_t off, int size, uint64_t
         if (cmd == 0xD0 && !f->readonly) {
             uint64_t base = off & ~(uint64_t)(BLOCK - 1);
             if (base + BLOCK <= f->size) memset(f->mem + base, 0xFF, BLOCK);
-            f->dirty = 1;
+            touched(f, base + BLOCK);
             f->status = 0x80;
         } else {
             f->status = 0xB0;
@@ -167,6 +175,7 @@ int wd_flash_init(wd_flash *f, uint64_t size, const uint8_t *data, size_t len, i
     memset(f->mem, 0xFF, (size_t)size);
     if (data) memcpy(f->mem, data, len > size ? (size_t)size : len);
     f->size = size;
+    f->used = data ? (len > size ? size : len) : 0;
     f->readonly = readonly;
     f->status = 0x80;
     f->mode = M_ARRAY;

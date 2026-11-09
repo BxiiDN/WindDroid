@@ -54,6 +54,48 @@
         </LinearLayout>
     </HorizontalScrollView>
 
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/bar"
+        android:paddingStart="8dp"
+        android:paddingTop="4dp"
+        android:text="@string/vm_section"
+        android:textColor="@color/accent"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/vm_disks"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/bar"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:textColor="@color/dim"
+        android:textSize="12sp" />
+
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/bar">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp">
+
+            <Button android:id="@+id/btn_vm" style="@style/Btn" android:text="@string/btn_vm" />
+            <Button android:id="@+id/btn_disk" style="@style/Btn" android:text="@string/btn_disk" />
+            <Button android:id="@+id/btn_iso" style="@style/Btn" android:text="@string/btn_iso" />
+            <Button android:id="@+id/btn_newdisk" style="@style/Btn" android:text="@string/btn_newdisk" />
+            <Button android:id="@+id/btn_vm_ram" style="@style/Btn" />
+            <Button android:id="@+id/btn_reset_vars" style="@style/Btn" android:text="@string/btn_reset_vars" />
+        </LinearLayout>
+    </HorizontalScrollView>
+
     <ScrollView
         android:id="@+id/scroll"
         android:layout_width="match_parent"

@@ -8,6 +8,9 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor;
+import android.database.Cursor;
+import android.provider.OpenableColumns;
 import android.text.method.ScrollingMovementMethod;
 import android.util.Log;
 import android.view.KeyEvent;
@@ -28,7 +31,12 @@ import java.util.Locale;
 
 public class MainActivity extends Activity implements Engine.Listener {
     private static final String TAG = "WindDroid";
-    private static final int REQ_IMAGE = 1;
+    private static final int REQ_IMAGE = 1, REQ_DISK = 2, REQ_ISO = 3, REQ_NEWDISK = 4;
+    private static final long[] VM_RAM_CHOICES = {1024, 2048, 3072, 4096, 6144, 8192};
+    private static final int[] NEWDISK_GB = {32, 64, 128, 256};
+    private long pendingNewDiskGb;
+    private TextView vmDisks;
+    private Button vmRamButton;
     private static final long MAX_IMAGE = 512L << 20;
     private static final int MAX_TERMINAL_CHARS = 120_000;
     private static final long[] RAM_CHOICES = {128, 256, 512, 1024, 2048};
@@ -71,6 +79,26 @@ public class MainActivity extends Activity implements Engine.Listener {
         });
         findViewById(R.id.btn_send).setOnClickListener(v -> sendLine());
         ramButton.setOnClickListener(v -> cycleRam());
+        vmDisks = findViewById(R.id.vm_disks);
+        vmRamButton = findViewById(R.id.btn_vm_ram);
+        findViewById(R.id.btn_vm).setOnClickListener(v -> startVm());
+        findViewById(R.id.btn_disk).setOnClickListener(v -> pickDocument(REQ_DISK));
+        findViewById(R.id.btn_iso).setOnClickListener(v -> pickDocument(REQ_ISO));
+        findViewById(R.id.btn_disk).setOnLongClickListener(v -> { forget(VmActivity.PREF_DISK, VmActivity.PREF_DISK_NAME); return true; });
+        findViewById(R.id.btn_iso).setOnLongClickListener(v -> { forget(VmActivity.PREF_ISO, VmActivity.PREF_ISO_NAME); return true; });
+        findViewById(R.id.btn_newdisk).setOnClickListener(v -> newDisk());
+        findViewById(R.id.btn_reset_vars).setOnClickListener(v -> {
+            new java.io.File(getFilesDir(), "uefi_vars.fd").delete();
+            setStatus(getString(R.string.vars_reset));
+        });
+        vmRamButton.setOnClickListener(v -> {
+            long cur = prefs.getLong(VmActivity.PREF_RAM, 2048), next = VM_RAM_CHOICES[0];
+            for (int i = 0; i < VM_RAM_CHOICES.length; i++)
+                if (VM_RAM_CHOICES[i] == cur) next = VM_RAM_CHOICES[(i + 1) % VM_RAM_CHOICES.length];
+            prefs.edit().putLong(VmActivity.PREF_RAM, next).apply();
+            updateVmLabels();
+        });
+        updateVmLabels();
         input.setOnEditorActionListener((v, actionId, ev) -> {
             if (actionId == EditorInfo.IME_ACTION_SEND
                     || (ev != null && ev.getKeyCode() == KeyEvent.KEYCODE_ENTER && ev.getAction() == KeyEvent.ACTION_DOWN)) {
@@ -148,9 +176,104 @@ public class MainActivity extends Activity implements Engine.Listener {
         startActivityForResult(i, REQ_IMAGE);
     }
 
+    // ------------------------------------------------------------ UEFI virtual machine
+
+    private void updateVmLabels() {
+        String disk = prefs.getString(VmActivity.PREF_DISK_NAME, null);
+        String iso = prefs.getString(VmActivity.PREF_ISO_NAME, null);
+        if (prefs.getString(VmActivity.PREF_DISK, null) == null) disk = null;
+        if (prefs.getString(VmActivity.PREF_ISO, null) == null) iso = null;
+        vmDisks.setText(getString(R.string.vm_disk_label, disk == null ? getString(R.string.none) : disk) + "\n"
+                + getString(R.string.vm_iso_label, iso == null ? getString(R.string.none) : iso));
+        vmRamButton.setText(getString(R.string.btn_vm_ram, prefs.getLong(VmActivity.PREF_RAM, 2048)));
+    }
+
+    private void startVm() {
+        engine.stop();
+        startActivity(new Intent(this, VmActivity.class));
+    }
+
+    private void pickDocument(int req) {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("*/*");
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                | (req == REQ_DISK ? Intent.FLAG_GRANT_WRITE_URI_PERMISSION : 0));
+        startActivityForResult(i, req);
+    }
+
+    private void forget(String key, String nameKey) {
+        prefs.edit().remove(key).remove(nameKey).apply();
+        updateVmLabels();
+    }
+
+    private void newDisk() {
+        String[] labels = new String[NEWDISK_GB.length];
+        for (int i = 0; i < labels.length; i++) labels[i] = NEWDISK_GB[i] + " GB";
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.newdisk_title)
+                .setItems(labels, (d, which) -> {
+                    pendingNewDiskGb = NEWDISK_GB[which];
+                    Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    i.setType("application/octet-stream");
+                    i.putExtra(Intent.EXTRA_TITLE, "windows-arm64.vhdx");
+                    startActivityForResult(i, REQ_NEWDISK);
+                })
+                .show();
+    }
+
+    private String displayName(Uri uri) {
+        try (Cursor c = getContentResolver().query(uri, new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst()) return c.getString(0);
+        } catch (RuntimeException ignored) {
+        }
+        String s = uri.getLastPathSegment();
+        return s == null ? "image" : s;
+    }
+
+    private static final String[] FORMATS = {"RAW", "ISO", "VHD", "VHDX"};
+
+    private void onDocument(int req, Uri uri, int flags) {
+        try {
+            int take = Intent.FLAG_GRANT_READ_URI_PERMISSION | (req == REQ_ISO ? 0 : Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            getContentResolver().takePersistableUriPermission(uri, take & flags | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (SecurityException e) {
+            Log.w(TAG, "no persistable permission", e);
+        }
+        String name = displayName(uri);
+        if (req == REQ_NEWDISK) {
+            try {
+                ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "rw");
+                if (pfd == null || !Engine.createVhdx(pfd.detachFd(), pendingNewDiskGb << 30)) throw new IOException();
+                prefs.edit().putString(VmActivity.PREF_DISK, uri.toString()).putString(VmActivity.PREF_DISK_NAME, name).apply();
+                setStatus(getString(R.string.newdisk_ok, name, pendingNewDiskGb));
+            } catch (IOException | RuntimeException e) {
+                showError(getString(R.string.newdisk_fail));
+            }
+            updateVmLabels();
+            return;
+        }
+        String fmt = "?";
+        try (ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "r")) {
+            if (pfd != null) fmt = FORMATS[Math.max(0, Math.min(3, Engine.imageFormat(pfd.getFd())))];
+        } catch (IOException | RuntimeException e) {
+            showError(String.valueOf(e.getMessage()));
+            return;
+        }
+        String label = getString(R.string.disk_format, name, fmt);
+        if (req == REQ_DISK) prefs.edit().putString(VmActivity.PREF_DISK, uri.toString()).putString(VmActivity.PREF_DISK_NAME, label).apply();
+        else prefs.edit().putString(VmActivity.PREF_ISO, uri.toString()).putString(VmActivity.PREF_ISO_NAME, label).apply();
+        updateVmLabels();
+    }
+
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+        if (res == RESULT_OK && data != null && data.getData() != null && req != REQ_IMAGE) {
+            onDocument(req, data.getData(), data.getFlags());
+            return;
+        }
         if (req != REQ_IMAGE || res != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
         try (InputStream in = getContentResolver().openInputStream(uri)) {

@@ -29,4 +29,24 @@ for want in "WindDroid Monitor" "MIDR 000f0510" "selftest: all 6 checks passed" 
     if grep -qF "$want" guest.log; then echo "ok: $want"; else echo "::error::missing guest output: $want"; fail=1; fi
 done
 if [ -s crash.log ]; then annotate error "crash" crash.log; fail=1; fi
+
+# ---- UEFI virtual machine: EDK2 boots in the app, the USB keyboard opens the boot manager
+adb shell am force-stop com.bxiidn.winddroid
+adb logcat -c
+adb shell am start -W -n com.bxiidn.winddroid/.VmActivity --ez autorun true --ez no_disks true \
+    --es type_after "'Press any key'" --es type "'\\r'" > start2.log 2>&1 || { annotate error "am start VmActivity failed" start2.log; exit 1; }
+for i in $(seq 1 120); do
+    if adb logcat -d -s WindDroid:I | grep -q -E "Please select boot device|STOPPED"; then break; fi
+    sleep 2
+done
+sleep 3
+adb logcat -d -s WindDroid:I > uefi.log
+adb logcat -d | grep -E -A20 "FATAL EXCEPTION|F libc|F DEBUG" > crash2.log || true
+tail -c 4000 uefi.log
+annotate notice "UEFI output" uefi.log
+for want in "UEFI firmware" "FB 800x600" "Press any key to enter the Boot Manager Menu" "TYPING on the USB keyboard" "Please select boot device"; do
+    if grep -qF "$want" uefi.log; then echo "ok: $want"; else echo "::error::missing UEFI output: $want"; fail=1; fi
+done
+if grep -q "STOPPED" uefi.log; then echo "::error::VM stopped unexpectedly"; fail=1; fi
+if [ -s crash2.log ]; then annotate error "crash" crash2.log; fail=1; fi
 exit $fail

@@ -59,23 +59,31 @@ def short_name(name):
 
 
 class Fat32:
-    def __init__(self, sectors, label=b"WINDDROID  "):
+    """FAT32, or FAT16 with fat16=True (fixed root directory of 512 entries)."""
+    def __init__(self, sectors, label=b"WINDDROID  ", fat16=False, hidden=PART_START):
+        self.fat16 = fat16
+        self.hidden = hidden
         self.spc = 1                                          # 512-byte clusters
-        self.reserved = 32
+        self.reserved = 1 if fat16 else 32
+        self.root_sectors = 32 if fat16 else 0
         self.sectors = sectors
         clusters = sectors // self.spc
-        self.fat_sectors = (clusters * 4 + 2 * 4 + SECTOR - 1) // SECTOR
-        self.data_start = self.reserved + 2 * self.fat_sectors
+        esize = 2 if fat16 else 4
+        self.eoc = 0xFFFF if fat16 else 0x0FFFFFFF
+        self.fat_sectors = (clusters * esize + 2 * esize + SECTOR - 1) // SECTOR
+        self.data_start = self.reserved + 2 * self.fat_sectors + self.root_sectors
         self.nclusters = (sectors - self.data_start) // self.spc
-        if self.nclusters < 65525:
+        if fat16 and not 4085 <= self.nclusters < 65525:
+            raise ValueError("size not valid for FAT16")
+        if not fat16 and self.nclusters < 65525:
             raise ValueError("partition too small for FAT32")
         self.fat = [0] * (self.nclusters + 2)
-        self.fat[0] = 0x0FFFFFF8
-        self.fat[1] = 0x0FFFFFFF
+        self.fat[0] = 0xFFF8 if fat16 else 0x0FFFFFF8
+        self.fat[1] = self.eoc
         self.data = {}
         self.next_free = 2
         self.label = label
-        self.root = self.alloc_chain(b"")
+        self.root = 0 if fat16 else self.alloc_chain(b"")
         self.dirs = {"": []}                                 # path -> list of entries
         self.dir_cluster = {"": self.root}
 
@@ -85,7 +93,7 @@ class Fat32:
         first = self.next_free
         for i in range(n):
             c = first + i
-            self.fat[c] = c + 1 if i + 1 < n else 0x0FFFFFFF
+            self.fat[c] = c + 1 if i + 1 < n else self.eoc
             self.data[c] = payload[i * csize:(i + 1) * csize].ljust(csize, b"\0")
         self.next_free += n
         return first
@@ -113,6 +121,7 @@ class Fat32:
 
     def finish(self):
         csize = self.spc * SECTOR
+        root_body = None
         for path, ents in self.dirs.items():
             c = self.dir_cluster[path]
             body = b""
@@ -123,10 +132,15 @@ class Fat32:
                 pc = self.dir_cluster[parent] if parent else 0
                 body += self.entry(b".          ", 0x10, c, 0) + self.entry(b"..         ", 0x10, pc, 0)
             body += b"".join(ents)
+            if path == "" and self.fat16:
+                if len(body) > self.root_sectors * SECTOR:
+                    raise ValueError("root directory too large")
+                root_body = body.ljust(self.root_sectors * SECTOR, b"\0")
+                continue
             chain = []
             while True:
                 chain.append(c)
-                if self.fat[c] >= 0x0FFFFFF8:
+                if self.fat[c] >= (0xFFF8 if self.fat16 else 0x0FFFFFF8):
                     break
                 c = self.fat[c]
             if len(body) > len(chain) * csize:
@@ -137,24 +151,34 @@ class Fat32:
         bs = bytearray(SECTOR)
         bs[0:3] = b"\xEB\x58\x90"
         bs[3:11] = b"WINDDRD "
-        struct.pack_into("<HBHBHHBHHHII", bs, 11, SECTOR, self.spc, self.reserved, 2, 0, 0, 0xF8, 0,
-                         63, 255, PART_START, self.sectors)
-        struct.pack_into("<IHHIHH", bs, 36, self.fat_sectors, 0, 0, self.root, 1, 6)
-        struct.pack_into("<BBBI11s8s", bs, 64, 0x80, 0, 0x29, 0x57444431, self.label, b"FAT32   ")
+        if self.fat16:
+            small = self.sectors if self.sectors < 65536 else 0
+            struct.pack_into("<HBHBHHBHHHII", bs, 11, SECTOR, self.spc, self.reserved, 2, 512, small, 0xF8,
+                             self.fat_sectors, 63, 255, self.hidden, 0 if small else self.sectors)
+            struct.pack_into("<BBBI11s8s", bs, 36, 0x80, 0, 0x29, 0x57444431, self.label, b"FAT16   ")
+        else:
+            struct.pack_into("<HBHBHHBHHHII", bs, 11, SECTOR, self.spc, self.reserved, 2, 0, 0, 0xF8, 0,
+                             63, 255, self.hidden, self.sectors)
+            struct.pack_into("<IHHIHH", bs, 36, self.fat_sectors, 0, 0, self.root, 1, 6)
+            struct.pack_into("<BBBI11s8s", bs, 64, 0x80, 0, 0x29, 0x57444431, self.label, b"FAT32   ")
         bs[510:512] = b"\x55\xAA"
         fsinfo = bytearray(SECTOR)
         struct.pack_into("<I", fsinfo, 0, 0x41615252)
         struct.pack_into("<III", fsinfo, 484, 0x61417272, self.nclusters + 2 - self.next_free, self.next_free)
         struct.pack_into("<I", fsinfo, 508, 0xAA550000)
-        fat = struct.pack("<%dI" % len(self.fat), *self.fat).ljust(self.fat_sectors * SECTOR, b"\0")
+        fat = struct.pack("<%d%s" % (len(self.fat), "H" if self.fat16 else "I"), *self.fat)
+        fat = fat.ljust(self.fat_sectors * SECTOR, b"\0")
 
         out = bytearray(self.data_start * SECTOR)
         out[0:SECTOR] = bs
-        out[SECTOR:2 * SECTOR] = fsinfo
-        out[6 * SECTOR:7 * SECTOR] = bs
-        out[7 * SECTOR:8 * SECTOR] = fsinfo
+        if not self.fat16:
+            out[SECTOR:2 * SECTOR] = fsinfo
+            out[6 * SECTOR:7 * SECTOR] = bs
+            out[7 * SECTOR:8 * SECTOR] = fsinfo
         out[self.reserved * SECTOR:(self.reserved + self.fat_sectors) * SECTOR] = fat
-        out[(self.reserved + self.fat_sectors) * SECTOR:self.data_start * SECTOR] = fat
+        out[(self.reserved + self.fat_sectors) * SECTOR:(self.reserved + 2 * self.fat_sectors) * SECTOR] = fat
+        if root_body is not None:
+            out[(self.reserved + 2 * self.fat_sectors) * SECTOR:self.data_start * SECTOR] = root_body
         used = max(self.data) if self.data else 1
         out += bytes((used - 1) * csize)
         for c, blob in self.data.items():
@@ -163,11 +187,19 @@ class Fat32:
         return bytes(out)
 
 
-def create(path, size_mb, files):
+def fat_image(size_bytes, files, fat16=True):
+    """A bare FAT volume (no partition table), e.g. an El Torito EFI boot image."""
+    fs = Fat32(size_bytes // SECTOR, fat16=fat16, hidden=0)
+    for dest, payload in files:
+        fs.add_file(dest.strip("/").replace("\\", "/"), payload)
+    return fs.finish().ljust(size_bytes, b"\0")
+
+
+def create(path, size_mb, files, fat16=False):
     total = size_mb * 1024 * 1024 // SECTOR
     last = total - 34
     part_sectors = last - PART_START + 1
-    fs = Fat32(part_sectors)
+    fs = Fat32(part_sectors, fat16=fat16)
     for dest, payload in files:
         fs.add_file(dest.strip("/").replace("\\", "/"), payload)
     image = fs.finish()
@@ -195,18 +227,27 @@ class Reader:
         self.part = struct.unpack_from("<Q", ent, 32)[0] * SECTOR
         bs = self.read(self.part, SECTOR)
         (self.bps, self.spc, self.res, self.nfats) = struct.unpack_from("<HBHB", bs, 11)
-        self.fatsz = struct.unpack_from("<I", bs, 36)[0]
-        self.rootc = struct.unpack_from("<I", bs, 44)[0]
-        self.data = self.part + (self.res + self.nfats * self.fatsz) * self.bps
+        root_ents, fatsz16 = struct.unpack_from("<H", bs, 17)[0], struct.unpack_from("<H", bs, 22)[0]
+        self.fat16 = fatsz16 != 0
+        self.fatsz = fatsz16 if self.fat16 else struct.unpack_from("<I", bs, 36)[0]
+        self.rootc = 0 if self.fat16 else struct.unpack_from("<I", bs, 44)[0]
+        self.root_off = self.part + (self.res + self.nfats * self.fatsz) * self.bps
+        self.root_len = root_ents * 32
+        self.data = self.root_off + (self.root_len + self.bps - 1) // self.bps * self.bps
 
     def read(self, off, n):
         self.f.seek(off)
         return self.f.read(n)
 
     def fat(self, c):
+        if self.fat16:
+            v = struct.unpack("<H", self.read(self.part + self.res * self.bps + 2 * c, 2))[0]
+            return v | 0x0FFF0000 if v >= 0xFFF8 else v
         return struct.unpack("<I", self.read(self.part + self.res * self.bps + 4 * c, 4))[0] & 0x0FFFFFFF
 
     def chain(self, c):
+        if c == 0 and self.fat16:
+            return self.read(self.root_off, self.root_len)
         csize = self.bps * self.spc
         out = b""
         while 2 <= c < 0x0FFFFFF8:
