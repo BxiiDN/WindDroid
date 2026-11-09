@@ -153,6 +153,7 @@ wd_tlbe *wd_translate(wd_machine *m, uint64_t va, int acc, int unpriv)
         e->level = r.level;
         e->attr = r.attr;
         e->host = wd_phys_host(m, r.pa_page);
+        e->ro = !wd_phys_is_ram(m, r.pa_page);
     }
     if (!perm_ok(m, e, acc, unpriv)) raise_abort(m, va, acc, FSC_PERM(e->level ? e->level : 3));
     return e;
@@ -218,7 +219,7 @@ void wd_write(wd_machine *m, uint64_t va, int size, uint64_t val, int unpriv)
         return;
     }
     wd_tlbe *e = wd_translate(m, va, ACC_WRITE, unpriv);
-    if (e->host) {
+    if (e->host && !e->ro) {
         uint8_t *p = e->host + (va & 0xFFF);
         switch (size) {
         case 1: *p = (uint8_t)val; break;

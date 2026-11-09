@@ -13,7 +13,12 @@ add_library(winddroid SHARED
     ${WD_ROOT}/core/fpu.c
     ${WD_ROOT}/devices/gic.c
     ${WD_ROOT}/devices/simple.c
-    ${WD_ROOT}/host/machine.c)
+    ${WD_ROOT}/devices/flash.c
+    ${WD_ROOT}/devices/fwcfg.c
+    ${WD_ROOT}/devices/pci.c
+    ${WD_ROOT}/host/machine.c
+    ${WD_ROOT}/host/platform.c
+    ${WD_ROOT}/host/fdt.c)
 
 target_include_directories(winddroid PRIVATE ${WD_ROOT}/include ${WD_ROOT}/core)
 target_compile_options(winddroid PRIVATE -O2 -frounding-math -std=c11 -D_GNU_SOURCE -Wall -Wno-unused-parameter)

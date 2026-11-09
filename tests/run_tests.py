@@ -5,6 +5,7 @@ Usage: run_tests.py [--vm PATH] [--guests DIR] [--quiet]
 Exit status 0 only if every test passes.
 """
 import argparse
+import re
 import os
 import subprocess
 import sys
@@ -34,12 +35,61 @@ TESTS = [
 ]
 
 
+FW = os.path.join(ROOT, "firmware")
+
+# UEFI tests: (name, args, expected output, check) - args may use {vars}
+FW_TESTS = [
+    ("uefi_boot", ["-s", "Please select boot device", "-k", "Press any key=\\r"],
+     ["UEFI firmware", "No bootable option or device was found", "Please select boot device"]),
+    ("uefi_setup", ["-s", "Device Manager", "-k", "Press any key=\\r",
+                    "-k", "ESC to exit=\\r"],
+     ["Please select boot device", "Device Manager"]),
+    ("uefi_vars_reload", ["-s", "Press any key"], ["Press any key to enter the Boot Manager Menu"]),
+]
+
+
+def run_fw_tests(vm, quiet, timeout):
+    import shutil
+    import tempfile
+    failed = []
+    with tempfile.TemporaryDirectory() as d:
+        vars_path = os.path.join(d, "vars.fd")
+        shutil.copy(os.path.join(FW, "QEMU_VARS.fd"), vars_path)
+        template = open(vars_path, "rb").read()
+        for name, extra, want in FW_TESTS:
+            cmd = [vm, "-q", "-r", "-m", "1024", "-n", "60000000000", "-b", os.path.join(FW, "QEMU_EFI.fd"),
+                   "-v", vars_path] + extra
+            t0 = time.time()
+            try:
+                p = subprocess.run(cmd, capture_output=True, timeout=timeout)
+                out, code = (p.stdout + p.stderr).decode(errors="replace"), p.returncode
+            except subprocess.TimeoutExpired as e:
+                out, code = (e.stdout or b"").decode(errors="replace"), -1
+            clean = re.sub(r"\x1b\[[0-9;=]*[A-Za-z]", " ", out)
+            missing = [w for w in want if w not in clean]
+            extra_fail = []
+            if name == "uefi_boot" and open(vars_path, "rb").read() == template:
+                extra_fail.append("variable store was not written back")
+            ok = code == 0 and not missing and not extra_fail
+            if not quiet or not ok:
+                print(f"{'PASS' if ok else 'FAIL'}  {name:12s} exit={code:<4d} {time.time() - t0:5.2f}s")
+            if not ok:
+                failed.append(name)
+                for w in missing:
+                    print(f"      missing output: {w!r}")
+                for w in extra_fail:
+                    print(f"      {w}")
+                print("      " + "\n      ".join(clean.strip().splitlines()[-8:]))
+    return failed
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--vm", default=os.path.join(ROOT, "build", "winddroid-vm"))
     ap.add_argument("--guests", default=os.path.join(ROOT, "guest", "build"))
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--timeout", type=float, default=120)
+    ap.add_argument("--no-firmware", action="store_true")
     args = ap.parse_args()
 
     failed = []
@@ -64,7 +114,10 @@ def main():
                     print(f"      missing output: {w!r}")
                 print("      " + "\n      ".join(out.strip().splitlines()[-12:]))
     total = len(TESTS)
-    print(f"{total - len(failed)}/{total} guest tests passed")
+    if not args.no_firmware and os.path.exists(os.path.join(FW, "QEMU_EFI.fd")):
+        failed += run_fw_tests(args.vm, args.quiet, max(args.timeout, 300))
+        total += len(FW_TESTS)
+    print(f"{total - len(failed)}/{total} tests passed")
     return 1 if failed else 0
 
 

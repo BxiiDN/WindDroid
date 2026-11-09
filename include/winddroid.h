@@ -27,7 +27,16 @@ typedef struct wd_machine wd_machine;
 #define WD_GICR_BASE     0x080A0000ULL
 #define WD_UART_BASE     0x09000000ULL
 #define WD_RTC_BASE      0x09010000ULL
+#define WD_FWCFG_BASE    0x09020000ULL
 #define WD_CTL_BASE      0x09100000ULL  /* WindDroid control device */
+#define WD_FLASH_SIZE    0x04000000ULL  /* per bank; bank 1 at WD_FLASH_SIZE */
+#define WD_PCIE_MMIO     0x10000000ULL
+#define WD_PCIE_MMIO_SZ  0x2EFF0000ULL
+#define WD_PCIE_PIO      0x3EFF0000ULL
+#define WD_PCIE_ECAM     0x3F000000ULL
+#define WD_PCIE_ECAM_SZ  0x01000000ULL
+#define WD_PCIE_MMIO_HI     0x8000000000ULL
+#define WD_PCIE_MMIO_HI_SZ  0x8000000000ULL
 #define WD_VIRTIO_BASE   0x0A000000ULL
 #define WD_RAM_BASE      0x40000000ULL
 
@@ -63,6 +72,12 @@ void wd_set_entry(wd_machine *m, uint64_t pc);
 int  wd_load_image(wd_machine *m, const uint8_t *data, size_t len); /* ELF or raw at RAM base */
 
 void wd_uart_input(wd_machine *m, const uint8_t *data, size_t len);
+
+/* UEFI firmware boot: code goes to flash bank 0, the variable store to bank 1
+ * (vars may be NULL for an empty store). Builds the device tree and fw_cfg. */
+int  wd_load_firmware(wd_machine *m, const uint8_t *code, size_t code_len, const uint8_t *vars, size_t vars_len);
+/* Current variable store (to persist it); returns NULL if not booting firmware. */
+const uint8_t *wd_firmware_vars(wd_machine *m, size_t *len, int *dirty);
 
 wd_run_result wd_run(wd_machine *m, uint64_t max_insns);
 

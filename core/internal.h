@@ -6,6 +6,7 @@
 #define WD_INTERNAL_H
 
 #include <setjmp.h>
+#include <stdio.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -109,8 +110,62 @@ typedef struct {
     uint8_t *host;           /* host pointer when the page is RAM, else NULL */
     uint8_t perm;
     uint8_t level;           /* translation level of the leaf, for fault reports */
+    uint8_t ro;              /* host pointer is read-only (flash in array mode) */
     uint8_t attr;            /* MAIR attribute index */
 } wd_tlbe;
+
+/* ---------------------------------------------------------------- flash */
+
+typedef struct {
+    uint8_t *mem;
+    uint64_t size;
+    int mode, readonly, dirty;
+    uint32_t status;
+    uint64_t wb_addr;
+    unsigned wb_words, wb_len;
+    uint8_t wb[4096];
+} wd_flash;
+
+/* ---------------------------------------------------------------- fw_cfg */
+
+#define WD_FWCFG_MAX 64
+typedef struct wd_fwcfg_item wd_fwcfg_item;
+struct wd_fwcfg_item {
+    uint16_t sel;
+    char name[56];
+    uint8_t *data;
+    uint32_t len;
+    int writable;
+    void (*on_write)(struct wd_machine *m, wd_fwcfg_item *it);
+};
+
+typedef struct {
+    wd_fwcfg_item items[WD_FWCFG_MAX];
+    int n;
+    uint16_t next_file;
+    wd_fwcfg_item *cur;
+    uint32_t off;
+    uint32_t dma_hi;
+} wd_fwcfg;
+
+/* ---------------------------------------------------------------- PCI */
+
+enum { WD_BAR_NONE = 0, WD_BAR_MEM32, WD_BAR_MEM64, WD_BAR_IO };
+#define WD_MAX_PCI 16
+
+typedef struct wd_pcidev wd_pcidev;
+struct wd_pcidev {
+    int devfn;
+    uint8_t cfg[4096], wmask[4096], w1cmask[4096];
+    uint64_t bar_size[6];
+    uint8_t bar_type[6];
+    int cap_next;
+    int intx;
+    uint64_t (*bar_read)(struct wd_machine *m, wd_pcidev *d, int bar, uint64_t off, int size);
+    void (*bar_write)(struct wd_machine *m, wd_pcidev *d, int bar, uint64_t off, int size, uint64_t val);
+    void (*on_cfg_write)(struct wd_machine *m, wd_pcidev *d, uint32_t off, int size, uint32_t val);
+    void *opaque;
+};
 
 /* ---------------------------------------------------------------- machine */
 
@@ -145,6 +200,15 @@ struct wd_machine {
     char err[256];
     uint64_t warned_sysreg[16];
     int warned_n;
+
+    /* platform */
+    wd_flash flash[2];
+    wd_fwcfg fwcfg;
+    wd_pcidev *pci[WD_MAX_PCI];
+    int npci;
+    int firmware;            /* booting UEFI firmware from flash */
+    uint8_t *dtb;
+    size_t dtb_size;
 };
 
 /* cpu.c */
@@ -190,6 +254,37 @@ bool wd_sysreg_write(wd_machine *m, uint32_t key, uint64_t val);
 void wd_sys_insn(wd_machine *m, uint32_t insn);
 
 /* devices */
+uint8_t *wd_flash_host(wd_flash *f, uint64_t off);
+uint64_t wd_flash_read(wd_machine *m, wd_flash *f, uint64_t off, int size);
+void wd_flash_write(wd_machine *m, wd_flash *f, uint64_t off, int size, uint64_t val);
+int wd_flash_init(wd_flash *f, uint64_t size, const uint8_t *data, size_t len, int readonly);
+void wd_flash_free(wd_flash *f);
+
+void wd_fwcfg_init(wd_fwcfg *f);
+void wd_fwcfg_free(wd_fwcfg *f);
+wd_fwcfg_item *wd_fwcfg_add_file(wd_fwcfg *f, const char *name, const void *data, uint32_t len, int writable);
+wd_fwcfg_item *wd_fwcfg_file(wd_fwcfg *f, const char *name);
+uint64_t wd_fwcfg_read(wd_machine *m, wd_fwcfg *f, uint64_t off, int size);
+void wd_fwcfg_write(wd_machine *m, wd_fwcfg *f, uint64_t off, int size, uint64_t val);
+
+void wd_pci_init_dev(wd_pcidev *d, int devfn, uint16_t vendor, uint16_t device, uint32_t class_rev,
+                     uint16_t subvendor, uint16_t subdev);
+void wd_pci_set_bar(wd_pcidev *d, int bar, uint64_t size, int type);
+int wd_pci_add_cap(wd_pcidev *d, uint8_t id, int len);
+uint64_t wd_pci_bar_addr(const wd_pcidev *d, int bar);
+void wd_pci_set_intx(wd_machine *m, wd_pcidev *d, int level);
+uint32_t wd_pci_cfg_read(wd_pcidev *d, uint32_t off, int size);
+void wd_pci_cfg_write(wd_machine *m, wd_pcidev *d, uint32_t off, int size, uint32_t val);
+uint64_t wd_ecam_read(wd_machine *m, uint64_t off, int size);
+void wd_ecam_write(wd_machine *m, uint64_t off, int size, uint64_t val);
+uint64_t wd_pci_mmio_read(wd_machine *m, uint64_t pa, int size, int io);
+void wd_pci_mmio_write(wd_machine *m, uint64_t pa, int size, uint64_t val, int io);
+int wd_dma_read(wd_machine *m, uint64_t pa, void *buf, size_t len);
+int wd_dma_write(wd_machine *m, uint64_t pa, const void *buf, size_t len);
+void wd_pci_add(wd_machine *m, wd_pcidev *d);
+void wd_pci_host_init(wd_machine *m);
+int wd_phys_is_ram(wd_machine *m, uint64_t pa);
+
 void wd_gic_reset(wd_gic *g);
 uint64_t wd_gicd_read(wd_machine *m, uint64_t off, int size);
 void wd_gicd_write(wd_machine *m, uint64_t off, int size, uint64_t val);

@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "../core/internal.h"
+#include "platform.h"
 
 static uint64_t mono_ns(void)
 {
@@ -31,6 +32,8 @@ wd_machine *wd_create(const wd_config *cfg)
     m->stop = -1;
     wd_gic_reset(&m->gic);
     wd_uart_reset(&m->uart);
+    wd_fwcfg_init(&m->fwcfg);
+    wd_pci_host_init(m);
     wd_cpu_reset(m);
     return m;
 }
@@ -38,6 +41,7 @@ wd_machine *wd_create(const wd_config *cfg)
 void wd_destroy(wd_machine *m)
 {
     if (!m) return;
+    wd_platform_free(m);
     free(m->ram);
     free(m);
 }
@@ -69,14 +73,36 @@ void wd_dump_state(wd_machine *m, char *buf, size_t len)
         n += snprintf(buf + n, len - (size_t)n, "x%-2d=%016llx%s", i, (unsigned long long)c->x[i],
                       (i % 4 == 3) ? "\n" : "  ");
     }
-    if (n > 0 && (size_t)n < len) snprintf(buf + n, len - (size_t)n, "\n");
+    if (n > 0 && (size_t)n < len)
+        n += snprintf(buf + n, len - (size_t)n,
+                      "timer: cnt=%llx cntv_ctl=%llx cval=%llx cntp_ctl=%llx cval=%llx\n"
+                      "gic: dctlr=%x pmr=%x igrpen0=%d igrpen1=%d rpr=%x ap_n=%d\n",
+                      (unsigned long long)wd_counter(m), (unsigned long long)c->cntv_ctl,
+                      (unsigned long long)c->cntv_cval, (unsigned long long)c->cntp_ctl,
+                      (unsigned long long)c->cntp_cval, m->gic.dctlr, m->gic.pmr, m->gic.igrpen0,
+                      m->gic.igrpen1, (unsigned)wd_gic_rpr(m), m->gic.ap_n);
+    for (int i = 0; i < GIC_NIRQ && n > 0 && (size_t)n < len; i++) {
+        wd_gic *g = &m->gic;
+        if (!g->enabled[i] && !g->latch[i] && !g->line[i]) continue;
+        n += snprintf(buf + n, len - (size_t)n, "  irq%d en=%d latch=%d line=%d act=%d grp=%d prio=%x edge=%d\n", i,
+                      g->enabled[i], g->latch[i], g->line[i], g->active[i], g->group[i], g->prio[i], g->edge[i]);
+    }
 }
 
 /* ---------------------------------------------------------------- physical bus */
 
+int wd_phys_is_ram(wd_machine *m, uint64_t pa)
+{
+    return pa >= WD_RAM_BASE && pa - WD_RAM_BASE < m->ram_size;
+}
+
 uint8_t *wd_phys_host(wd_machine *m, uint64_t pa)
 {
     if (pa >= WD_RAM_BASE && pa - WD_RAM_BASE < m->ram_size) return m->ram + (pa - WD_RAM_BASE);
+    if (pa < 2 * WD_FLASH_SIZE) {
+        wd_flash *f = &m->flash[pa >= WD_FLASH_SIZE];
+        return wd_flash_host(f, pa % WD_FLASH_SIZE);
+    }
     return NULL;
 }
 
@@ -84,29 +110,48 @@ static int in(uint64_t pa, uint64_t base, uint64_t size) { return pa >= base && 
 
 uint64_t wd_phys_read(wd_machine *m, uint64_t pa, int size)
 {
-    uint8_t *p = wd_phys_host(m, pa);
-    if (p) {
+    if (wd_phys_is_ram(m, pa)) {
         uint64_t v = 0;
-        memcpy(&v, p, (size_t)size);
+        memcpy(&v, m->ram + (pa - WD_RAM_BASE), (size_t)size);
         return v;
+    }
+    if (pa < 2 * WD_FLASH_SIZE) {
+        wd_flash *f = &m->flash[pa >= WD_FLASH_SIZE];
+        return f->mem ? wd_flash_read(m, f, pa % WD_FLASH_SIZE, size) : 0;
     }
     if (in(pa, WD_GICD_BASE, 0x10000)) return wd_gicd_read(m, pa - WD_GICD_BASE, size);
     if (in(pa, WD_GICR_BASE, 0x20000)) return wd_gicr_read(m, pa - WD_GICR_BASE, size);
     if (in(pa, WD_UART_BASE, 0x1000)) return wd_uart_read(m, (pa - WD_UART_BASE) & ~3ULL);
     if (in(pa, WD_RTC_BASE, 0x1000)) return wd_rtc_read(m, (pa - WD_RTC_BASE) & ~3ULL);
+    if (in(pa, WD_FWCFG_BASE, 0x18)) return wd_fwcfg_read(m, &m->fwcfg, pa - WD_FWCFG_BASE, size);
     if (in(pa, WD_CTL_BASE, 0x1000)) return wd_ctl_read(m, pa - WD_CTL_BASE);
+    if (in(pa, WD_PCIE_ECAM, WD_PCIE_ECAM_SZ)) return wd_ecam_read(m, pa - WD_PCIE_ECAM, size);
+    if (in(pa, WD_PCIE_MMIO, WD_PCIE_MMIO_SZ) || in(pa, WD_PCIE_MMIO_HI, WD_PCIE_MMIO_HI_SZ))
+        return wd_pci_mmio_read(m, pa, size, 0);
+    if (in(pa, WD_PCIE_PIO, 0x10000)) return wd_pci_mmio_read(m, pa - WD_PCIE_PIO, size, 1);
     return 0;                                   /* unassigned: reads as zero */
 }
 
 void wd_phys_write(wd_machine *m, uint64_t pa, int size, uint64_t val)
 {
-    uint8_t *p = wd_phys_host(m, pa);
-    if (p) { memcpy(p, &val, (size_t)size); return; }
+    if (wd_phys_is_ram(m, pa)) { memcpy(m->ram + (pa - WD_RAM_BASE), &val, (size_t)size); return; }
+    if (pa < 2 * WD_FLASH_SIZE) {
+        wd_flash *f = &m->flash[pa >= WD_FLASH_SIZE];
+        if (f->mem) wd_flash_write(m, f, pa % WD_FLASH_SIZE, size, val);
+        return;
+    }
     if (in(pa, WD_GICD_BASE, 0x10000)) { wd_gicd_write(m, pa - WD_GICD_BASE, size, val); return; }
     if (in(pa, WD_GICR_BASE, 0x20000)) { wd_gicr_write(m, pa - WD_GICR_BASE, size, val); return; }
     if (in(pa, WD_UART_BASE, 0x1000)) { wd_uart_write(m, (pa - WD_UART_BASE) & ~3ULL, val); return; }
     if (in(pa, WD_RTC_BASE, 0x1000)) { wd_rtc_write(m, (pa - WD_RTC_BASE) & ~3ULL, val); return; }
+    if (in(pa, WD_FWCFG_BASE, 0x18)) { wd_fwcfg_write(m, &m->fwcfg, pa - WD_FWCFG_BASE, size, val); return; }
     if (in(pa, WD_CTL_BASE, 0x1000)) { wd_ctl_write(m, pa - WD_CTL_BASE, val); return; }
+    if (in(pa, WD_PCIE_ECAM, WD_PCIE_ECAM_SZ)) { wd_ecam_write(m, pa - WD_PCIE_ECAM, size, val); return; }
+    if (in(pa, WD_PCIE_MMIO, WD_PCIE_MMIO_SZ) || in(pa, WD_PCIE_MMIO_HI, WD_PCIE_MMIO_HI_SZ)) {
+        wd_pci_mmio_write(m, pa, size, val, 0);
+        return;
+    }
+    if (in(pa, WD_PCIE_PIO, 0x10000)) { wd_pci_mmio_write(m, pa - WD_PCIE_PIO, size, val, 1); return; }
 }
 
 /* ---------------------------------------------------------------- loading */

@@ -108,7 +108,7 @@ def main():
                 print(f"KILL  {desc} (does not compile)")
             else:
                 u = run([os.path.join(work, "build", "unit_tests")], work)
-                t = run([sys.executable, os.path.join(work, "tests", "run_tests.py"), "--quiet",
+                t = run([sys.executable, os.path.join(work, "tests", "run_tests.py"), "--quiet", "--no-firmware",
                          "--vm", os.path.join(work, "build", "winddroid-vm"), "--guests", guests,
                          "--timeout", "60"], work)
                 if u.returncode != 0 or t.returncode != 0:
