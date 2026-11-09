@@ -1,0 +1,11 @@
+build/
+guest/build/
+apk/.gradle/
+apk/app/build/
+apk/app/.cxx/
+apk/build/
+apk/local.properties
+dist/
+__pycache__/
+*.iml
+.idea/

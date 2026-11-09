@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#FF0B0F14</color>
+    <color name="bar">#FF151B23</color>
+    <color name="term">#FFC8F7C5</color>
+    <color name="accent">#FF4FC3F7</color>
+    <color name="dim">#FF8A96A3</color>
+    <color name="icon_bg">#FF0B2A3C</color>
+</resources>

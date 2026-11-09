@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:fitsSystemWindows="true"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/bar"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="8dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textColor="@color/accent"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/dim"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/bar">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp">
+
+            <Button android:id="@+id/btn_demo" style="@style/Btn" android:text="@string/btn_demo" />
+            <Button android:id="@+id/btn_load" style="@style/Btn" android:text="@string/btn_load" />
+            <Button android:id="@+id/btn_stop" style="@style/Btn" android:text="@string/btn_stop" />
+            <Button android:id="@+id/btn_ram" style="@style/Btn" />
+            <Button android:id="@+id/btn_clear" style="@style/Btn" android:text="@string/btn_clear" />
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <ScrollView
+        android:id="@+id/scroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <TextView
+            android:id="@+id/terminal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:padding="8dp"
+            android:textColor="@color/term"
+            android:textIsSelectable="true"
+            android:textSize="13sp" />
+    </ScrollView>
+
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/bar">
+
+        <LinearLayout
+            android:id="@+id/quick"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal" />
+    </HorizontalScrollView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/bar"
+        android:orientation="horizontal"
+        android:padding="4dp">
+
+        <EditText
+            android:id="@+id/input"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:fontFamily="monospace"
+            android:hint="@string/input_hint"
+            android:imeOptions="actionSend"
+            android:inputType="text|textNoSuggestions"
+            android:textColor="@color/term"
+            android:textColorHint="@color/dim" />
+
+        <Button android:id="@+id/btn_send" style="@style/Btn" android:text="@string/btn_send" />
+    </LinearLayout>
+</LinearLayout>

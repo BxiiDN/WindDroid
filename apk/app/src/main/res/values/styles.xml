@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:colorPrimary">@color/bar</item>
+        <item name="android:colorPrimaryDark">@color/bg</item>
+        <item name="android:statusBarColor">@color/bar</item>
+        <item name="android:navigationBarColor">@color/bar</item>
+        <item name="android:windowBackground">@color/bg</item>
+    </style>
+
+    <style name="Btn" parent="android:Widget.Material.Button.Borderless.Colored">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:minWidth">0dp</item>
+    </style>
+</resources>

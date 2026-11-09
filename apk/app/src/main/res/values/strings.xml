@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WindDroid</string>
+    <string name="btn_demo">▶ Jalankan Monitor</string>
+    <string name="btn_load">Muat image…</string>
+    <string name="btn_stop">■ Stop</string>
+    <string name="btn_clear">Bersihkan</string>
+    <string name="btn_send">Kirim</string>
+    <string name="ram_label">RAM: %1$d MB</string>
+    <string name="input_hint">ketik perintah lalu Kirim</string>
+    <string name="status_idle">engine %1$s · siap</string>
+    <string name="status_running">%1$s berjalan</string>
+    <string name="booting">Menyalakan %1$s dengan RAM %2$d MB</string>
+    <string name="not_running">Mesin virtual belum berjalan</string>
+    <string name="error_title">Tidak bisa menjalankan</string>
+    <string name="stopped_shutdown">Mesin virtual mati (kode keluar %1$d)</string>
+    <string name="stopped_reset">Guest meminta reset; tekan Jalankan lagi</string>
+    <string name="stopped_error">Emulator berhenti karena galat internal</string>
+    <string name="stopped_user">Dihentikan</string>
+    <string name="welcome">WindDroid - mesin virtual AArch64 (peta memori QEMU virt: GICv3, PL011, timer generik, PSCI).\n\nTekan \"Jalankan Monitor\" untuk program demo bawaan, atau \"Muat image\" untuk menjalankan ELF/biner AArch64 bare-metal milik Anda (dimuat di 0x40000000 jika biner mentah).\n\nCatatan: versi ini belum bisa mem-boot Windows. Lihat README untuk peta jalan.\n</string>
+</resources>

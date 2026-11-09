@@ -1,0 +1,315 @@
+/*
+ * WindDroid - machine: physical bus, loader, PSCI, timers and run loop.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+#include "../core/internal.h"
+
+static uint64_t mono_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+/* ---------------------------------------------------------------- lifecycle */
+
+wd_machine *wd_create(const wd_config *cfg)
+{
+    wd_machine *m = calloc(1, sizeof *m);
+    if (!m) return NULL;
+    uint64_t size = cfg && cfg->ram_size ? cfg->ram_size : 256ULL << 20;
+    size = (size + 0xFFF) & ~0xFFFULL;
+    m->ram = calloc(1, (size_t)size);
+    if (!m->ram) { free(m); return NULL; }
+    m->ram_size = size;
+    m->realtime = cfg ? cfg->realtime : 0;
+    m->rt_base_ns = mono_ns();
+    m->stop = -1;
+    wd_gic_reset(&m->gic);
+    wd_uart_reset(&m->uart);
+    wd_cpu_reset(m);
+    return m;
+}
+
+void wd_destroy(wd_machine *m)
+{
+    if (!m) return;
+    free(m->ram);
+    free(m);
+}
+
+void wd_set_uart_tx(wd_machine *m, wd_uart_tx_fn fn, void *opaque)
+{
+    m->uart_tx = fn;
+    m->uart_opaque = opaque;
+}
+
+void wd_set_trace(wd_machine *m, int on) { m->trace = on; }
+int wd_exit_code(wd_machine *m) { return m->exit_code; }
+uint64_t wd_icount(wd_machine *m) { return m->cpu.icount; }
+uint64_t wd_pc(wd_machine *m) { return m->cpu.pc; }
+const char *wd_error(wd_machine *m) { return m->err; }
+uint64_t wd_idle_ns(wd_machine *m) { return m->idle_ns; }
+void wd_set_entry(wd_machine *m, uint64_t pc) { m->cpu.pc = pc; }
+
+void wd_dump_state(wd_machine *m, char *buf, size_t len)
+{
+    wd_cpu *c = &m->cpu;
+    int n = snprintf(buf, len, "pc=%016llx EL%d sp=%016llx nzcv=%x daif=%x icount=%llu\n"
+                     "esr=%016llx far=%016llx elr=%016llx sctlr=%016llx\n",
+                     (unsigned long long)c->pc, c->el, (unsigned long long)*wd_sp_ptr(c),
+                     c->nzcv >> 28, c->daif >> 6, (unsigned long long)c->icount,
+                     (unsigned long long)c->esr, (unsigned long long)c->far,
+                     (unsigned long long)c->elr, (unsigned long long)c->sctlr);
+    for (int i = 0; i < 31 && n > 0 && (size_t)n < len; i++) {
+        n += snprintf(buf + n, len - (size_t)n, "x%-2d=%016llx%s", i, (unsigned long long)c->x[i],
+                      (i % 4 == 3) ? "\n" : "  ");
+    }
+    if (n > 0 && (size_t)n < len) snprintf(buf + n, len - (size_t)n, "\n");
+}
+
+/* ---------------------------------------------------------------- physical bus */
+
+uint8_t *wd_phys_host(wd_machine *m, uint64_t pa)
+{
+    if (pa >= WD_RAM_BASE && pa - WD_RAM_BASE < m->ram_size) return m->ram + (pa - WD_RAM_BASE);
+    return NULL;
+}
+
+static int in(uint64_t pa, uint64_t base, uint64_t size) { return pa >= base && pa - base < size; }
+
+uint64_t wd_phys_read(wd_machine *m, uint64_t pa, int size)
+{
+    uint8_t *p = wd_phys_host(m, pa);
+    if (p) {
+        uint64_t v = 0;
+        memcpy(&v, p, (size_t)size);
+        return v;
+    }
+    if (in(pa, WD_GICD_BASE, 0x10000)) return wd_gicd_read(m, pa - WD_GICD_BASE, size);
+    if (in(pa, WD_GICR_BASE, 0x20000)) return wd_gicr_read(m, pa - WD_GICR_BASE, size);
+    if (in(pa, WD_UART_BASE, 0x1000)) return wd_uart_read(m, (pa - WD_UART_BASE) & ~3ULL);
+    if (in(pa, WD_RTC_BASE, 0x1000)) return wd_rtc_read(m, (pa - WD_RTC_BASE) & ~3ULL);
+    if (in(pa, WD_CTL_BASE, 0x1000)) return wd_ctl_read(m, pa - WD_CTL_BASE);
+    return 0;                                   /* unassigned: reads as zero */
+}
+
+void wd_phys_write(wd_machine *m, uint64_t pa, int size, uint64_t val)
+{
+    uint8_t *p = wd_phys_host(m, pa);
+    if (p) { memcpy(p, &val, (size_t)size); return; }
+    if (in(pa, WD_GICD_BASE, 0x10000)) { wd_gicd_write(m, pa - WD_GICD_BASE, size, val); return; }
+    if (in(pa, WD_GICR_BASE, 0x20000)) { wd_gicr_write(m, pa - WD_GICR_BASE, size, val); return; }
+    if (in(pa, WD_UART_BASE, 0x1000)) { wd_uart_write(m, (pa - WD_UART_BASE) & ~3ULL, val); return; }
+    if (in(pa, WD_RTC_BASE, 0x1000)) { wd_rtc_write(m, (pa - WD_RTC_BASE) & ~3ULL, val); return; }
+    if (in(pa, WD_CTL_BASE, 0x1000)) { wd_ctl_write(m, pa - WD_CTL_BASE, val); return; }
+}
+
+/* ---------------------------------------------------------------- loading */
+
+int wd_load_raw(wd_machine *m, const uint8_t *data, size_t len, uint64_t paddr)
+{
+    if (paddr < WD_RAM_BASE || paddr - WD_RAM_BASE + len > m->ram_size) {
+        snprintf(m->err, sizeof m->err, "image (%zu bytes at %#llx) does not fit in RAM", len,
+                 (unsigned long long)paddr);
+        return -1;
+    }
+    memcpy(m->ram + (paddr - WD_RAM_BASE), data, len);
+    wd_tlb_flush(m);
+    return 0;
+}
+
+static uint64_t rd64(const uint8_t *p) { uint64_t v; memcpy(&v, p, 8); return v; }
+static uint32_t rd32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
+static uint16_t rd16(const uint8_t *p) { uint16_t v; memcpy(&v, p, 2); return v; }
+
+int wd_load_elf(wd_machine *m, const uint8_t *d, size_t len)
+{
+    if (len < 64 || memcmp(d, "\x7f" "ELF", 4) != 0 || d[4] != 2 || d[5] != 1) {
+        snprintf(m->err, sizeof m->err, "not a 64-bit little-endian ELF file");
+        return -1;
+    }
+    if (rd16(d + 18) != 183) {
+        snprintf(m->err, sizeof m->err, "ELF machine is not AArch64");
+        return -1;
+    }
+    uint64_t entry = rd64(d + 24), phoff = rd64(d + 32);
+    uint16_t phentsize = rd16(d + 54), phnum = rd16(d + 56);
+    if (phoff + (uint64_t)phnum * phentsize > len || phentsize < 56) {
+        snprintf(m->err, sizeof m->err, "truncated ELF program headers");
+        return -1;
+    }
+    int loaded = 0;
+    for (unsigned i = 0; i < phnum; i++) {
+        const uint8_t *ph = d + phoff + (uint64_t)i * phentsize;
+        if (rd32(ph) != 1) continue;                    /* PT_LOAD */
+        uint64_t off = rd64(ph + 8), paddr = rd64(ph + 24);
+        uint64_t filesz = rd64(ph + 32), memsz = rd64(ph + 40);
+        if (off + filesz > len || filesz > memsz) {
+            snprintf(m->err, sizeof m->err, "bad ELF segment %u", i);
+            return -1;
+        }
+        if (paddr < WD_RAM_BASE || paddr - WD_RAM_BASE + memsz > m->ram_size) {
+            snprintf(m->err, sizeof m->err, "ELF segment at %#llx (%llu bytes) is outside RAM",
+                     (unsigned long long)paddr, (unsigned long long)memsz);
+            return -1;
+        }
+        memcpy(m->ram + (paddr - WD_RAM_BASE), d + off, filesz);
+        memset(m->ram + (paddr - WD_RAM_BASE) + filesz, 0, memsz - filesz);
+        loaded++;
+    }
+    if (!loaded) {
+        snprintf(m->err, sizeof m->err, "ELF has no loadable segments");
+        return -1;
+    }
+    wd_tlb_flush(m);
+    m->cpu.pc = entry;
+    return 0;
+}
+
+int wd_load_image(wd_machine *m, const uint8_t *data, size_t len)
+{
+    if (len >= 4 && memcmp(data, "\x7f" "ELF", 4) == 0) return wd_load_elf(m, data, len);
+    if (wd_load_raw(m, data, len, WD_RAM_BASE) != 0) return -1;
+    m->cpu.pc = WD_RAM_BASE;
+    return 0;
+}
+
+/* ---------------------------------------------------------------- timers */
+
+uint64_t wd_counter(wd_machine *m)
+{
+    if (m->realtime) return (mono_ns() - m->rt_base_ns) / 16;   /* 62.5 MHz */
+    return m->cpu.icount;
+}
+
+void wd_update_timers(wd_machine *m)
+{
+    wd_cpu *c = &m->cpu;
+    uint64_t now = wd_counter(m);
+    int v = (c->cntv_ctl & 1) && !(c->cntv_ctl & 2) && now >= c->cntv_cval;
+    int p = (c->cntp_ctl & 1) && !(c->cntp_ctl & 2) && now >= c->cntp_cval;
+    wd_gic_set_line(m, WD_PPI_VTIMER, v);
+    wd_gic_set_line(m, WD_PPI_PTIMER, p);
+}
+
+/* Earliest future deadline of an armed timer, or UINT64_MAX. */
+static uint64_t next_deadline(wd_machine *m)
+{
+    wd_cpu *c = &m->cpu;
+    uint64_t now = wd_counter(m), d = UINT64_MAX;
+    if ((c->cntv_ctl & 3) == 1 && c->cntv_cval > now && c->cntv_cval < d) d = c->cntv_cval;
+    if ((c->cntp_ctl & 3) == 1 && c->cntp_cval > now && c->cntp_cval < d) d = c->cntp_cval;
+    return d;
+}
+
+/* ---------------------------------------------------------------- PSCI */
+
+#define PSCI_SUCCESS        0
+#define PSCI_NOT_SUPPORTED  (-1)
+#define PSCI_INVALID_PARAMS (-2)
+#define PSCI_ALREADY_ON     (-4)
+
+int wd_psci(wd_machine *m)
+{
+    wd_cpu *c = &m->cpu;
+    uint32_t fn = (uint32_t)c->x[0];
+    int64_t ret;
+    switch (fn) {
+    case 0x80000000: ret = 0x10001; break;              /* SMCCC_VERSION 1.1 */
+    case 0x84000000: ret = 0x10000; break;              /* PSCI_VERSION 1.0 */
+    case 0x84000001: case 0xC4000001:                   /* CPU_SUSPEND */
+        m->wfi = 1;
+        ret = PSCI_SUCCESS;
+        break;
+    case 0x84000002:                                    /* CPU_OFF */
+        m->stop = WD_RUN_SHUTDOWN;
+        ret = PSCI_SUCCESS;
+        break;
+    case 0x84000003: case 0xC4000003:                   /* CPU_ON */
+        ret = (c->x[1] & 0xFF00FFFFFFULL) == 0 ? PSCI_ALREADY_ON : PSCI_INVALID_PARAMS;
+        break;
+    case 0x84000004: case 0xC4000004:                   /* AFFINITY_INFO */
+        ret = (c->x[1] & 0xFF00FFFFFFULL) == 0 ? 0 : PSCI_INVALID_PARAMS;
+        break;
+    case 0x84000006: ret = 2; break;                    /* MIGRATE_INFO_TYPE: not needed */
+    case 0x84000008:                                    /* SYSTEM_OFF */
+        m->stop = WD_RUN_SHUTDOWN;
+        ret = PSCI_SUCCESS;
+        break;
+    case 0x84000009:                                    /* SYSTEM_RESET */
+        m->stop = WD_RUN_RESET;
+        ret = PSCI_SUCCESS;
+        break;
+    case 0x8400000A: {                                  /* PSCI_FEATURES */
+        uint32_t q = (uint32_t)c->x[1];
+        switch (q) {
+        case 0x84000000: case 0x84000001: case 0xC4000001: case 0x84000002:
+        case 0x84000003: case 0xC4000003: case 0x84000004: case 0xC4000004:
+        case 0x84000006: case 0x84000008: case 0x84000009: case 0x8400000A:
+            ret = 0; break;
+        default: ret = PSCI_NOT_SUPPORTED; break;
+        }
+        break;
+    }
+    default: ret = PSCI_NOT_SUPPORTED; break;
+    }
+    c->x[0] = (uint64_t)ret;
+    return 0;
+}
+
+/* ---------------------------------------------------------------- run loop */
+
+wd_run_result wd_run(wd_machine *m, uint64_t max_insns)
+{
+    wd_cpu *c = &m->cpu;
+    m->stop = -1;
+    m->budget = max_insns;
+    m->idle_ns = 0;
+    m->irq_dirty = 1;
+
+    if (setjmp(m->jb)) {
+        if (m->stop >= 0) goto done;
+        if (m->budget) m->budget--;
+    }
+
+    while (m->budget) {
+        if (m->irq_dirty || (c->icount & 255) == 0) {
+            m->irq_dirty = 0;
+            wd_update_timers(m);
+            m->irq_pend = wd_gic_irq_pending(m);
+        }
+        if (m->wfi) {
+            if (wd_gic_any_pending(m)) {
+                m->wfi = 0;
+            } else {
+                uint64_t d = next_deadline(m);
+                if (!m->realtime) {
+                    if (d == UINT64_MAX) { m->stop = WD_RUN_IDLE; goto done; }
+                    c->icount = d;                      /* skip idle time */
+                    m->irq_dirty = 1;
+                    continue;
+                }
+                if (d == UINT64_MAX) m->idle_ns = UINT64_MAX;
+                else {
+                    uint64_t now = wd_counter(m);
+                    m->idle_ns = (d - now) * 16;
+                }
+                m->stop = WD_RUN_IDLE;
+                goto done;
+            }
+        }
+        if (m->irq_pend && !(c->daif & DAIF_I)) { m->irq_pend = 0; wd_take_irq(m); }
+        wd_cpu_step(m);
+        m->budget--;
+        if (m->stop >= 0) goto done;
+    }
+    return WD_RUN_BUDGET;
+
+done:
+    return (wd_run_result)m->stop;
+}

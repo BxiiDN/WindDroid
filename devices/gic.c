@@ -1,0 +1,332 @@
+/*
+ * WindDroid - GICv3 (single CPU, single security state, no LPIs/ITS).
+ * Distributor at WD_GICD_BASE, one redistributor at WD_GICR_BASE,
+ * CPU interface through the ICC_* system registers.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+#include "../core/internal.h"
+
+#define PRIO_MASK 0xF8                      /* 5 priority bits implemented */
+#define SPURIOUS  1023
+
+void wd_gic_reset(wd_gic *g)
+{
+    memset(g, 0, sizeof *g);
+    for (int i = 0; i < 16; i++) g->edge[i] = 1;
+    g->rwaker = 6;                           /* ProcessorSleep | ChildrenAsleep */
+}
+
+static int pending(const wd_gic *g, int i)
+{
+    return g->latch[i] || (!g->edge[i] && g->line[i]);
+}
+
+static int group_on(const wd_gic *g, int i)
+{
+    if (g->group[i]) return (g->dctlr & 2) && g->igrpen1;
+    return (g->dctlr & 1) && g->igrpen0;
+}
+
+static int running_prio(const wd_gic *g)
+{
+    return g->ap_n ? g->ap_prio[g->ap_n - 1] : 0xFF;
+}
+
+/* Highest priority pending interrupt that passes the masks; -1 if none.
+ * grp: 0, 1 or -1 for either group. */
+static int hppi(const wd_gic *g, int grp, int apply_masks)
+{
+    int best = -1, bp = 0x100;
+    for (int i = 0; i < GIC_NIRQ; i++) {
+        if (!g->enabled[i] || !pending(g, i) || g->active[i]) continue;
+        if (grp >= 0 && g->group[i] != grp) continue;
+        if (!group_on(g, i)) continue;
+        int p = g->prio[i] & PRIO_MASK;
+        if (p < bp) { bp = p; best = i; }
+    }
+    if (best >= 0 && apply_masks) {
+        if (bp >= g->pmr || bp >= running_prio(g)) return -1;
+    }
+    return best;
+}
+
+int wd_gic_irq_pending(wd_machine *m)
+{
+    return hppi(&m->gic, -1, 1) >= 0;
+}
+
+int wd_gic_any_pending(wd_machine *m)
+{
+    return hppi(&m->gic, -1, 1) >= 0;
+}
+
+void wd_gic_set_line(wd_machine *m, int irq, int level)
+{
+    wd_gic *g = &m->gic;
+    if (irq < 0 || irq >= GIC_NIRQ) return;
+    level = !!level;
+    if (g->edge[irq] && level && !g->line[irq]) g->latch[irq] = 1;
+    if (g->line[irq] != level) m->irq_dirty = 1;
+    g->line[irq] = (uint8_t)level;
+}
+
+static uint64_t ack(wd_machine *m, int grp)
+{
+    wd_gic *g = &m->gic;
+    int i = hppi(g, grp, 1);
+    if (i < 0) return SPURIOUS;
+    g->latch[i] = 0;
+    g->active[i] = 1;
+    if (g->ap_n < 32) {
+        g->ap_prio[g->ap_n] = g->prio[i] & PRIO_MASK;
+        g->ap_id[g->ap_n] = (uint16_t)i;
+        g->ap_n++;
+    }
+    m->irq_dirty = 1;
+    return (uint64_t)i;
+}
+
+uint64_t wd_gic_iar(wd_machine *m)
+{
+    /* Group 0 and group 1 are both delivered as IRQ in this model. */
+    return ack(m, -1);
+}
+
+uint64_t wd_gic_hppir(wd_machine *m)
+{
+    int i = hppi(&m->gic, -1, 0);
+    return i < 0 ? SPURIOUS : (uint64_t)i;
+}
+
+uint64_t wd_gic_rpr(wd_machine *m)
+{
+    return (uint64_t)running_prio(&m->gic);
+}
+
+void wd_gic_dir(wd_machine *m, uint32_t id)
+{
+    if (id < GIC_NIRQ) m->gic.active[id] = 0;
+    m->irq_dirty = 1;
+}
+
+void wd_gic_eoi(wd_machine *m, uint32_t id)
+{
+    wd_gic *g = &m->gic;
+    if (id >= GIC_NIRQ) return;
+    for (int k = g->ap_n - 1; k >= 0; k--) {
+        if (g->ap_id[k] == id) {
+            memmove(&g->ap_prio[k], &g->ap_prio[k + 1], (size_t)(g->ap_n - k - 1));
+            memmove(&g->ap_id[k], &g->ap_id[k + 1], (size_t)(g->ap_n - k - 1) * sizeof g->ap_id[0]);
+            g->ap_n--;
+            break;
+        }
+    }
+    if (!(g->ctlr & 2)) g->active[id] = 0;      /* EOImode == 0: drop and deactivate */
+    m->irq_dirty = 1;
+}
+
+void wd_gic_sgi(wd_machine *m, uint64_t v)
+{
+    int intid = (int)((v >> 24) & 15);
+    int irm = (int)((v >> 40) & 1);
+    int aff1 = (int)((v >> 16) & 0xFF), aff2 = (int)((v >> 32) & 0xFF), aff3 = (int)((v >> 48) & 0xFF);
+    int targets = (int)(v & 0xFFFF);
+    /* IRM=1 means "all but self", so with one CPU nothing is delivered. */
+    if (!irm && aff1 == 0 && aff2 == 0 && aff3 == 0 && (targets & 1)) {
+        m->gic.latch[intid] = 1;
+        m->irq_dirty = 1;
+    }
+}
+
+/* ---------------------------------------------------------------- MMIO helpers */
+
+static uint32_t bits_read(const uint8_t *arr, int base)
+{
+    uint32_t v = 0;
+    for (int i = 0; i < 32; i++)
+        if (base + i < GIC_NIRQ && arr[base + i]) v |= 1u << i;
+    return v;
+}
+
+static uint32_t pend_read(const wd_gic *g, int base)
+{
+    uint32_t v = 0;
+    for (int i = 0; i < 32; i++)
+        if (base + i < GIC_NIRQ && pending(g, base + i)) v |= 1u << i;
+    return v;
+}
+
+static void bits_set(uint8_t *arr, int base, uint32_t val, uint8_t to)
+{
+    for (int i = 0; i < 32; i++)
+        if ((val >> i) & 1 && base + i < GIC_NIRQ) arr[base + i] = to;
+}
+
+static uint32_t cfg_read(const wd_gic *g, int base)
+{
+    uint32_t v = 0;
+    for (int i = 0; i < 16; i++)
+        if (base + i < GIC_NIRQ && g->edge[base + i]) v |= 2u << (2 * i);
+    return v;
+}
+
+static void cfg_write(wd_gic *g, int base, uint32_t val)
+{
+    for (int i = 0; i < 16; i++) {
+        int irq = base + i;
+        if (irq < 16 || irq >= GIC_NIRQ) continue;  /* SGIs are always edge */
+        g->edge[irq] = (val >> (2 * i + 1)) & 1;
+    }
+}
+
+/* Common register block shared by GICD (irq_base from offset) and GICR SGI frame. */
+static int common_read(wd_gic *g, uint64_t off, int irq_lo, int irq_hi, uint32_t *out)
+{
+    int base;
+    if (off >= 0x0080 && off < 0x0100) { base = (int)(off - 0x0080) * 8; goto bits_grp; }
+    if (off >= 0x0100 && off < 0x0180) { base = (int)(off - 0x0100) * 8; if (base < irq_lo || base >= irq_hi) { *out = 0; return 1; } *out = bits_read(g->enabled, base); return 1; }
+    if (off >= 0x0180 && off < 0x0200) { base = (int)(off - 0x0180) * 8; if (base < irq_lo || base >= irq_hi) { *out = 0; return 1; } *out = bits_read(g->enabled, base); return 1; }
+    if (off >= 0x0200 && off < 0x0300) { base = (int)((off - 0x0200) & 0x7F) * 8; if (base < irq_lo || base >= irq_hi) { *out = 0; return 1; } *out = pend_read(g, base); return 1; }
+    if (off >= 0x0300 && off < 0x0400) { base = (int)((off - 0x0300) & 0x7F) * 8; if (base < irq_lo || base >= irq_hi) { *out = 0; return 1; } *out = bits_read(g->active, base); return 1; }
+    if (off >= 0x0C00 && off < 0x0D00) { base = (int)(off - 0x0C00) * 4; if (base < irq_lo || base >= irq_hi) { *out = 0; return 1; } *out = cfg_read(g, base); return 1; }
+    if (off >= 0x0D00 && off < 0x0D80) { *out = 0; return 1; }
+    return 0;
+bits_grp:
+    if (base < irq_lo || base >= irq_hi) { *out = 0; return 1; }
+    *out = bits_read(g->group, base);
+    return 1;
+}
+
+static int common_write(wd_machine *m, uint64_t off, int irq_lo, int irq_hi, uint32_t v)
+{
+    wd_gic *g = &m->gic;
+    int base;
+    m->irq_dirty = 1;
+    if (off >= 0x0080 && off < 0x0100) {
+        base = (int)(off - 0x0080) * 8;
+        if (base >= irq_lo && base < irq_hi)
+            for (int i = 0; i < 32; i++) if (base + i < GIC_NIRQ) g->group[base + i] = (v >> i) & 1;
+        return 1;
+    }
+    if (off >= 0x0100 && off < 0x0180) { base = (int)(off - 0x0100) * 8; if (base >= irq_lo && base < irq_hi) bits_set(g->enabled, base, v, 1); return 1; }
+    if (off >= 0x0180 && off < 0x0200) { base = (int)(off - 0x0180) * 8; if (base >= irq_lo && base < irq_hi) bits_set(g->enabled, base, v, 0); return 1; }
+    if (off >= 0x0200 && off < 0x0280) { base = (int)(off - 0x0200) * 8; if (base >= irq_lo && base < irq_hi) bits_set(g->latch, base, v, 1); return 1; }
+    if (off >= 0x0280 && off < 0x0300) { base = (int)(off - 0x0280) * 8; if (base >= irq_lo && base < irq_hi) bits_set(g->latch, base, v, 0); return 1; }
+    if (off >= 0x0300 && off < 0x0380) { base = (int)(off - 0x0300) * 8; if (base >= irq_lo && base < irq_hi) bits_set(g->active, base, v, 1); return 1; }
+    if (off >= 0x0380 && off < 0x0400) { base = (int)(off - 0x0380) * 8; if (base >= irq_lo && base < irq_hi) bits_set(g->active, base, v, 0); return 1; }
+    if (off >= 0x0C00 && off < 0x0D00) { base = (int)(off - 0x0C00) * 4; if (base >= irq_lo && base < irq_hi) cfg_write(g, base, v); return 1; }
+    if (off >= 0x0D00 && off < 0x0D80) return 1;
+    return 0;
+}
+
+static uint64_t prio_read(wd_gic *g, uint64_t off, int size, int irq_lo, int irq_hi)
+{
+    uint64_t v = 0;
+    for (int k = 0; k < size; k++) {
+        int irq = (int)(off - 0x400) + k;
+        if (irq >= irq_lo && irq < irq_hi && irq < GIC_NIRQ) v |= (uint64_t)g->prio[irq] << (8 * k);
+    }
+    return v;
+}
+
+static void prio_write(wd_machine *m, uint64_t off, int size, uint64_t v, int irq_lo, int irq_hi)
+{
+    for (int k = 0; k < size; k++) {
+        int irq = (int)(off - 0x400) + k;
+        if (irq >= irq_lo && irq < irq_hi && irq < GIC_NIRQ)
+            m->gic.prio[irq] = (uint8_t)((v >> (8 * k)) & PRIO_MASK);
+    }
+    m->irq_dirty = 1;
+}
+
+/* ---------------------------------------------------------------- distributor */
+
+uint64_t wd_gicd_read(wd_machine *m, uint64_t off, int size)
+{
+    wd_gic *g = &m->gic;
+    uint32_t v;
+    if (off >= 0x0400 && off < 0x0800) return prio_read(g, off, size, 32, GIC_NIRQ);
+    if (off >= 0x6000 && off < 0x8000) {
+        int irq = (int)((off - 0x6000) / 8);
+        uint64_t r = irq < GIC_NIRQ ? g->irouter[irq] : 0;
+        if (size == 4 && (off & 4)) r >>= 32;
+        return size == 8 ? r : (uint32_t)r;
+    }
+    if (size == 8) return wd_gicd_read(m, off, 4) | (wd_gicd_read(m, off + 4, 4) << 32);
+    off &= ~3ULL;
+    switch (off) {
+    case 0x0000: return (g->dctlr & 3) | 0x10 | 0x40;
+    case 0x0004: return (9u << 19) | (GIC_NIRQ / 32 - 1);
+    case 0x0008: return 0x0000043B;
+    case 0x000C: case 0x0010: return 0;
+    case 0xFFE8: return 0x3B;
+    default: break;
+    }
+    if (common_read(g, off, 32, GIC_NIRQ, &v)) return v;
+    return 0;
+}
+
+void wd_gicd_write(wd_machine *m, uint64_t off, int size, uint64_t val)
+{
+    wd_gic *g = &m->gic;
+    if (off >= 0x0400 && off < 0x0800) { prio_write(m, off, size, val, 32, GIC_NIRQ); return; }
+    if (off >= 0x6000 && off < 0x8000) {
+        int irq = (int)((off - 0x6000) / 8);
+        if (irq < GIC_NIRQ) {
+            if (size == 8) g->irouter[irq] = val;
+            else if (off & 4) g->irouter[irq] = (g->irouter[irq] & 0xFFFFFFFFULL) | (val << 32);
+            else g->irouter[irq] = (g->irouter[irq] & ~0xFFFFFFFFULL) | (uint32_t)val;
+        }
+        return;
+    }
+    if (size == 8) { wd_gicd_write(m, off, 4, (uint32_t)val); wd_gicd_write(m, off + 4, 4, val >> 32); return; }
+    off &= ~3ULL;
+    if (off == 0x0000) { g->dctlr = (uint32_t)val & 3; m->irq_dirty = 1; return; }
+    common_write(m, off, 32, GIC_NIRQ, (uint32_t)val);
+}
+
+/* ---------------------------------------------------------------- redistributor */
+
+uint64_t wd_gicr_read(wd_machine *m, uint64_t off, int size)
+{
+    wd_gic *g = &m->gic;
+    if (off >= 0x20000) return 0;
+    if (off >= 0x10000) {
+        uint64_t o = off - 0x10000;
+        uint32_t v;
+        if (o >= 0x0400 && o < 0x0420) return prio_read(g, o, size, 0, 32);
+        if (size == 8) return wd_gicr_read(m, off, 4) | (wd_gicr_read(m, off + 4, 4) << 32);
+        if (common_read(g, o & ~3ULL, 0, 32, &v)) return v;
+        return 0;
+    }
+    if (off == 0x0008) {                      /* GICR_TYPER: Last, processor 0 */
+        return size == 8 ? 0x10 : 0x10;
+    }
+    if (off == 0x000C) return 0;
+    if (size == 8) return wd_gicr_read(m, off, 4) | (wd_gicr_read(m, off + 4, 4) << 32);
+    switch (off & ~3ULL) {
+    case 0x0000: return 0;                    /* GICR_CTLR */
+    case 0x0004: return 0x0000043B;           /* GICR_IIDR */
+    case 0x0014: return g->rwaker;
+    case 0xFFE8: return 0x3B;
+    default: return 0;
+    }
+}
+
+void wd_gicr_write(wd_machine *m, uint64_t off, int size, uint64_t val)
+{
+    wd_gic *g = &m->gic;
+    if (off >= 0x20000) return;
+    if (off >= 0x10000) {
+        uint64_t o = off - 0x10000;
+        if (o >= 0x0400 && o < 0x0420) { prio_write(m, o, size, val, 0, 32); return; }
+        if (size == 8) { wd_gicr_write(m, off, 4, (uint32_t)val); wd_gicr_write(m, off + 4, 4, val >> 32); return; }
+        common_write(m, o & ~3ULL, 0, 32, (uint32_t)val);
+        return;
+    }
+    if ((off & ~3ULL) == 0x0014) {
+        uint32_t sleep = (uint32_t)val & 2;
+        g->rwaker = sleep | (sleep ? 4 : 0);
+    }
+}
