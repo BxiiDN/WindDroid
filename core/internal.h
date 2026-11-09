@@ -207,6 +207,7 @@ struct wd_machine {
     wd_pcidev *pci[WD_MAX_PCI];
     int npci;
     int firmware;            /* booting UEFI firmware from flash */
+    struct { uint64_t addr; uint32_t width, height, stride, generation; int valid; } fb;
     uint8_t *dtb;
     size_t dtb_size;
 };
@@ -260,6 +261,7 @@ void wd_flash_write(wd_machine *m, wd_flash *f, uint64_t off, int size, uint64_t
 int wd_flash_init(wd_flash *f, uint64_t size, const uint8_t *data, size_t len, int readonly);
 void wd_flash_free(wd_flash *f);
 
+void wd_ramfb_init(wd_machine *m);
 void wd_fwcfg_init(wd_fwcfg *f);
 void wd_fwcfg_free(wd_fwcfg *f);
 wd_fwcfg_item *wd_fwcfg_add_file(wd_fwcfg *f, const char *name, const void *data, uint32_t len, int writable);

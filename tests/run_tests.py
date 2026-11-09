@@ -45,7 +45,31 @@ FW_TESTS = [
                     "-k", "ESC to exit=\\r"],
      ["Please select boot device", "Device Manager"]),
     ("uefi_vars_reload", ["-s", "Press any key"], ["Press any key to enter the Boot Manager Menu"]),
+    ("uefi_gop", ["-s", "Please select boot device", "-k", "Press any key=\\r", "-F", "{screen}"],
+     ["Please select boot device"]),
 ]
+
+
+def check_screen(path):
+    """The boot manager dialog: blue box with white text on an 800x600 GOP screen."""
+    try:
+        d = open(path, "rb").read()
+    except OSError:
+        return "no framebuffer image written"
+    hdr = d.split(b"\n", 3)
+    if hdr[0] != b"P6" or hdr[1] != b"800 600":
+        return f"unexpected framebuffer {hdr[:2]}"
+    px = hdr[3]
+    blue = white = 0
+    for i in range(0, len(px), 3):
+        r, g, b = px[i], px[i + 1], px[i + 2]
+        if r < 40 and g < 40 and b > 120:
+            blue += 1
+        elif r > 180 and g > 180 and b > 180:
+            white += 1
+    if blue < 20000 or white < 1000:
+        return f"screen content unexpected (blue={blue}, white={white})"
+    return None
 
 
 def run_fw_tests(vm, quiet, timeout):
@@ -57,8 +81,9 @@ def run_fw_tests(vm, quiet, timeout):
         shutil.copy(os.path.join(FW, "QEMU_VARS.fd"), vars_path)
         template = open(vars_path, "rb").read()
         for name, extra, want in FW_TESTS:
+            screen = os.path.join(d, "screen.ppm")
             cmd = [vm, "-q", "-r", "-m", "1024", "-n", "60000000000", "-b", os.path.join(FW, "QEMU_EFI.fd"),
-                   "-v", vars_path] + extra
+                   "-v", vars_path] + [a.replace("{screen}", screen) for a in extra]
             t0 = time.time()
             try:
                 p = subprocess.run(cmd, capture_output=True, timeout=timeout)
@@ -70,6 +95,10 @@ def run_fw_tests(vm, quiet, timeout):
             extra_fail = []
             if name == "uefi_boot" and open(vars_path, "rb").read() == template:
                 extra_fail.append("variable store was not written back")
+            if name == "uefi_gop":
+                err = check_screen(screen)
+                if err:
+                    extra_fail.append(err)
             ok = code == 0 and not missing and not extra_fail
             if not quiet or not ok:
                 print(f"{'PASS' if ok else 'FAIL'}  {name:12s} exit={code:<4d} {time.time() - t0:5.2f}s")
@@ -117,6 +146,19 @@ def main():
     if not args.no_firmware and os.path.exists(os.path.join(FW, "QEMU_EFI.fd")):
         failed += run_fw_tests(args.vm, args.quiet, max(args.timeout, 300))
         total += len(FW_TESTS)
+        acpiexec = os.environ.get("ACPIEXEC") or os.path.join(ROOT, "..", "ext", "acpica", "generate", "unix", "bin", "acpiexec")
+        if os.path.exists(acpiexec):
+            total += 1
+            p = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "acpi_check.py"), args.vm,
+                                os.path.join(FW, "QEMU_EFI.fd"), acpiexec], capture_output=True, text=True)
+            ok = p.returncode == 0
+            if not args.quiet or not ok:
+                print(f"{'PASS' if ok else 'FAIL'}  acpi_tables")
+            if not ok:
+                failed.append("acpi_tables")
+                print("      " + "\n      ".join(p.stdout.strip().splitlines()[-15:]))
+        else:
+            print("SKIP  acpi_tables (set ACPIEXEC to ACPICA's acpiexec)")
     print(f"{total - len(failed)}/{total} tests passed")
     return 1 if failed else 0
 

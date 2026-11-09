@@ -21,7 +21,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
-        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm bison
+      - name: Build ACPICA acpiexec (ACPI table validation)
+        run: |
+          git clone -q https://github.com/acpica/acpica /tmp/acpica
+          git -C /tmp/acpica checkout -q e85aa3bebaae81ed1e6d163511ac7e1eafe732cf
+          make -C /tmp/acpica acpiexec -j4 > /dev/null
+          echo "ACPIEXEC=/tmp/acpica/generate/unix/bin/acpiexec" >> "$GITHUB_ENV"
       - name: Build engine and guest programs, run all tests
         run: make test
       - name: Mutation testing (injected bugs must be detected)

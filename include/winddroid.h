@@ -76,6 +76,15 @@ void wd_uart_input(wd_machine *m, const uint8_t *data, size_t len);
 /* UEFI firmware boot: code goes to flash bank 0, the variable store to bank 1
  * (vars may be NULL for an empty store). Builds the device tree and fw_cfg. */
 int  wd_load_firmware(wd_machine *m, const uint8_t *code, size_t code_len, const uint8_t *vars, size_t vars_len);
+/* Framebuffer configured by the guest (ramfb). Pixels are XRGB8888 in guest
+ * RAM: byte order B, G, R, X. Returns 0 while no mode has been set. */
+typedef struct {
+    const uint8_t *pixels;
+    uint32_t width, height, stride;
+    uint32_t generation;      /* changes whenever the mode changes */
+} wd_fb_info;
+int wd_framebuffer(wd_machine *m, wd_fb_info *info);
+
 /* Current variable store (to persist it); returns NULL if not booting firmware. */
 const uint8_t *wd_firmware_vars(wd_machine *m, size_t *len, int *dirty);
 

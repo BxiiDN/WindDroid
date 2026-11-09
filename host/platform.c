@@ -175,6 +175,8 @@ int wd_load_firmware(wd_machine *m, const uint8_t *code, size_t code_len, const 
         snprintf(m->err, sizeof m->err, "out of memory for flash");
         return -1;
     }
+    if (!wd_fwcfg_file(&m->fwcfg, "etc/ramfb")) wd_ramfb_init(m);
+    if (!wd_fwcfg_file(&m->fwcfg, "etc/table-loader")) wd_acpi_build(m);
     build_dtb(m);
     if (m->dtb_size > m->ram_size) return -1;
     memcpy(m->ram, m->dtb, m->dtb_size);           /* ArmVirtQemu reads the tree at the start of RAM */
@@ -209,4 +211,12 @@ void wd_platform_free(wd_machine *m)
     m->npci = 0;
     free(m->dtb);
     m->dtb = NULL;
+}
+
+const uint8_t *wd_fwcfg_blob(wd_machine *m, const char *name, size_t *len)
+{
+    wd_fwcfg_item *it = wd_fwcfg_file(&m->fwcfg, name);
+    if (!it) return NULL;
+    *len = it->len;
+    return it->data;
 }

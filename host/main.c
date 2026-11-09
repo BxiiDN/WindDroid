@@ -12,6 +12,8 @@
  *     -v FILE        UEFI variable store (created if missing, written back on exit)
  *     -d FILE        write the generated device tree blob to FILE
  *     -s TEXT        stop with exit status 0 as soon as TEXT appears on the serial port
+ *     -A DIR         write the fw_cfg ACPI files (tables, rsdp, table-loader) to DIR and exit
+ *     -F FILE        save the framebuffer as a binary PPM image on exit
  *     -I             forward standard input to the serial port (interactive console)
  *     -k TEXT=INPUT  type INPUT on the serial port once TEXT has appeared (\\n, \\r, \\e escapes)
  *
@@ -33,6 +35,7 @@
 #include "winddroid.h"
 
 const uint8_t *wd_get_dtb(wd_machine *m, size_t *len);
+const uint8_t *wd_fwcfg_blob(wd_machine *m, const char *name, size_t *len);
 
 static volatile sig_atomic_t interrupted;
 static void on_signal(int sig) { (void)sig; interrupted = 1; }
@@ -92,9 +95,9 @@ int main(int argc, char **argv)
 {
     uint64_t ram_mb = 256, limit = 0;
     int realtime = 0, trace = 0, quiet = 0, opt, interactive = 0;
-    const char *input = NULL, *bios = NULL, *vars_path = NULL, *dtb_path = NULL;
+    const char *input = NULL, *bios = NULL, *vars_path = NULL, *dtb_path = NULL, *fb_path = NULL, *acpi_dir = NULL;
 
-    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:I")) != -1) {
+    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:IF:A:")) != -1) {
         switch (opt) {
         case 'm': ram_mb = strtoull(optarg, NULL, 0); break;
         case 'n': limit = strtoull(optarg, NULL, 0); break;
@@ -107,6 +110,8 @@ int main(int argc, char **argv)
         case 'd': dtb_path = optarg; break;
         case 's': stop_text = optarg; break;
         case 'I': interactive = 1; realtime = 1; break;
+        case 'F': fb_path = optarg; break;
+        case 'A': acpi_dir = optarg; break;
         case 'k': {
             char *eq = strchr(optarg, '=');
             if (eq && nkeys < MAX_KEYS) { *eq = 0; key_after[nkeys] = optarg; key_input[nkeys++] = eq + 1; }
@@ -150,6 +155,21 @@ int main(int argc, char **argv)
         return 2;
     }
     free(img);
+    if (acpi_dir) {
+        const char *names[] = { "etc/acpi/tables", "etc/acpi/rsdp", "etc/table-loader" };
+        const char *files[] = { "tables.bin", "rsdp.bin", "loader.bin" };
+        for (int i = 0; i < 3; i++) {
+            size_t fl;
+            const uint8_t *d = wd_fwcfg_blob(m, names[i], &fl);
+            char path[1024];
+            snprintf(path, sizeof path, "%s/%s", acpi_dir, files[i]);
+            FILE *f = fopen(path, "wb");
+            if (f && d) fwrite(d, 1, fl, f);
+            if (f) fclose(f);
+        }
+        wd_destroy(m);
+        return 0;
+    }
     if (dtb_path) {
         size_t dl;
         const uint8_t *d = wd_get_dtb(m, &dl);
@@ -239,6 +259,20 @@ int main(int argc, char **argv)
         char st[4096];
         wd_dump_state(m, st, sizeof st);
         fputs(st, stderr);
+    }
+    if (fb_path) {
+        wd_fb_info fb;
+        FILE *f = fopen(fb_path, "wb");
+        if (f && wd_framebuffer(m, &fb)) {
+            fprintf(f, "P6\n%u %u\n255\n", fb.width, fb.height);
+            for (uint32_t y = 0; y < fb.height; y++)
+                for (uint32_t x = 0; x < fb.width; x++) {
+                    const uint8_t *p = fb.pixels + (size_t)y * fb.stride + 4 * x;
+                    uint8_t rgb[3] = { p[2], p[1], p[0] };
+                    fwrite(rgb, 1, 3, f);
+                }
+        }
+        if (f) fclose(f);
     }
     if (vars_path) {
         size_t vl;
