@@ -47,7 +47,9 @@ jobs:
       - name: Version
         id: ver
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF#refs/tags/v}"; else V="0.1.0-dev.${GITHUB_RUN_NUMBER}"; fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF#refs/tags/v}"
+          elif [[ "$GITHUB_REF" == refs/heads/main ]]; then V="$(cat VERSION)"
+          else V="$(cat VERSION)-dev.${GITHUB_RUN_NUMBER}"; fi
           echo "name=$V" >> "$GITHUB_OUTPUT"
       - name: Build release APK
         working-directory: apk
@@ -69,8 +71,10 @@ jobs:
           path: dist/*.apk
 
   release:
+    # A release is published for every new version: either a pushed v* tag, or a
+    # push to main whose VERSION file names a version that has no release yet.
     name: GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
     needs: apk
     runs-on: ubuntu-24.04
     steps:
@@ -83,10 +87,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then TAG="${GITHUB_REF#refs/tags/}"; else TAG="v$(cat VERSION)"; fi
           NOTES=apk/RELEASE_NOTES.md
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/*.apk --clobber
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              gh release upload "$TAG" dist/*.apk --clobber
+            else
+              echo "Release $TAG already exists; bump VERSION to publish a new one."
+            fi
           else
-            gh release create "$TAG" dist/*.apk --title "WindDroid ${TAG}" --notes-file "$NOTES"
+            gh release create "$TAG" dist/*.apk --target "$GITHUB_SHA" --title "WindDroid ${TAG}" --notes-file "$NOTES"
           fi
