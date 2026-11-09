@@ -16,6 +16,7 @@
  *     -F FILE        save the framebuffer as a binary PPM image on exit
  *     -I             forward standard input to the serial port (interactive console)
  *     -k TEXT=INPUT  type INPUT on the serial port once TEXT has appeared (\\n, \\r, \\e escapes)
+ *     -D FILE        attach a disk image (raw/IMG, VHDX, VHD) as an NVMe SSD; "ro:FILE" opens it read-only
  *
  * Exit status: guest exit code (control device), 0 after PSCI SYSTEM_OFF,
  * 124 when the instruction limit is reached, 125 when the guest is idle
@@ -84,6 +85,10 @@ static uint8_t *read_file(const char *path, size_t *len)
     return buf;
 }
 
+#define MAX_DISKS 8
+static const char *disks[MAX_DISKS];
+static int ndisks;
+
 static double now_s(void)
 {
     struct timespec ts;
@@ -97,7 +102,7 @@ int main(int argc, char **argv)
     int realtime = 0, trace = 0, quiet = 0, opt, interactive = 0;
     const char *input = NULL, *bios = NULL, *vars_path = NULL, *dtb_path = NULL, *fb_path = NULL, *acpi_dir = NULL;
 
-    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:IF:A:")) != -1) {
+    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:IF:A:D:")) != -1) {
         switch (opt) {
         case 'm': ram_mb = strtoull(optarg, NULL, 0); break;
         case 'n': limit = strtoull(optarg, NULL, 0); break;
@@ -112,6 +117,9 @@ int main(int argc, char **argv)
         case 'I': interactive = 1; realtime = 1; break;
         case 'F': fb_path = optarg; break;
         case 'A': acpi_dir = optarg; break;
+        case 'D':
+            if (ndisks < MAX_DISKS) disks[ndisks++] = optarg;
+            break;
         case 'k': {
             char *eq = strchr(optarg, '=');
             if (eq && nkeys < MAX_KEYS) { *eq = 0; key_after[nkeys] = optarg; key_input[nkeys++] = eq + 1; }
@@ -155,6 +163,23 @@ int main(int argc, char **argv)
         return 2;
     }
     free(img);
+    for (int i = 0; i < ndisks; i++) {
+        const char *path = disks[i];
+        int ro = strncmp(path, "ro:", 3) == 0;
+        if (ro) path += 3;
+        int fd = open(path, ro ? O_RDONLY : O_RDWR);
+        if (fd < 0) { perror(path); return 2; }
+        wd_disk d;
+        char err[256];
+        if (wd_disk_open_image(fd, ro, 1, &d, err, sizeof err) != 0) {
+            fprintf(stderr, "%s: %s\n", path, err);
+            return 2;
+        }
+        if (wd_attach_nvme(m, &d) != 0) {
+            fprintf(stderr, "%s: %s\n", path, wd_error(m));
+            return 2;
+        }
+    }
     if (acpi_dir) {
         const char *names[] = { "etc/acpi/tables", "etc/acpi/rsdp", "etc/table-loader" };
         const char *files[] = { "tables.bin", "rsdp.bin", "loader.bin" };

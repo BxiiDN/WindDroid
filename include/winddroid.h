@@ -85,6 +85,37 @@ typedef struct {
 } wd_fb_info;
 int wd_framebuffer(wd_machine *m, wd_fb_info *info);
 
+/* Block devices. A disk is a set of callbacks over a byte-addressed image;
+ * the engine owns it after a successful attach and calls close() on destroy. */
+typedef struct wd_disk {
+    void *opaque;
+    uint64_t size;            /* bytes; a multiple of 512 is used */
+    int readonly;
+    uint32_t block_size;      /* logical block size: 512 (0 means 512), 2048 (CD) or 4096 */
+    int format;               /* WD_IMG_* the image was opened as */
+    int (*read)(void *opaque, uint64_t off, void *buf, size_t len);         /* 0 = ok */
+    int (*write)(void *opaque, uint64_t off, const void *buf, size_t len);  /* NULL if read-only */
+    int (*flush)(void *opaque);
+    void (*close)(void *opaque);
+} wd_disk;
+
+enum { WD_IMG_RAW = 0, WD_IMG_ISO, WD_IMG_VHD, WD_IMG_VHDX };
+/* Detect the format of an image file from its contents. */
+int wd_image_probe(int fd);
+
+/* Raw image behind a file descriptor (pread/pwrite, nothing is loaded into RAM). */
+int wd_disk_from_fd(int fd, int readonly, int take_ownership, wd_disk *out);
+/* Zero-filled in-memory disk. */
+int wd_disk_memory(uint64_t size, wd_disk *out);
+/* Image file of any supported format (raw/IMG, ISO, VHDX, VHD), detected from its contents. */
+int wd_disk_open_image(int fd, int readonly, int take_ownership, wd_disk *out, char *err, size_t errlen);
+
+/* Create an empty dynamic VHDX of 'size' bytes (block_size/sector_size 0 = 32 MiB / 512). */
+int wd_vhdx_create(int fd, uint64_t size, uint32_t block_size, uint32_t sector_size);
+
+/* Attach an NVMe SSD on the PCIe bus. Returns 0 on success. */
+int wd_attach_nvme(wd_machine *m, const wd_disk *disk);
+
 /* Current variable store (to persist it); returns NULL if not booting firmware. */
 const uint8_t *wd_firmware_vars(wd_machine *m, size_t *len, int *dirty);
 

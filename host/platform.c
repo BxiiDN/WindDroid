@@ -207,7 +207,10 @@ void wd_platform_free(wd_machine *m)
     wd_flash_free(&m->flash[0]);
     wd_flash_free(&m->flash[1]);
     wd_fwcfg_free(&m->fwcfg);
-    for (int i = 0; i < m->npci; i++) free(m->pci[i]);
+    for (int i = 0; i < m->npci; i++) {
+        if (m->pci[i]->on_free) m->pci[i]->on_free(m->pci[i]);
+        free(m->pci[i]);
+    }
     m->npci = 0;
     free(m->dtb);
     m->dtb = NULL;

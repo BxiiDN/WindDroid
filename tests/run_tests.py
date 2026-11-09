@@ -112,6 +112,132 @@ def run_fw_tests(vm, quiet, timeout):
     return failed
 
 
+# ------------------------------------------------------------------ disks (NVMe)
+
+SHELL_SCRIPT = (
+    "echo -off\r\n"
+    "ls fs0:\\\r\n"
+    "type fs0:\\hello.txt\r\n"
+    "cp fs0:\\big.bin fs0:\\copy.bin\r\n"
+    "echo written > fs0:\\out.txt\r\n"
+    "if exist fs1:\\second.txt then\r\n  type fs1:\\second.txt\r\nendif\r\n"
+    "pci\r\n"
+    "echo SCRIPT-DONE\r\n"
+    "reset -s\r\n"
+)
+
+
+RO_SCRIPT = (
+    "echo -off\r\n"
+    "type fs0:\\hello.txt\r\n"
+    "cp fs0:\\hello.txt fs0:\\copy.txt\r\n"
+    "echo SCRIPT-DONE\r\n"
+    "reset -s\r\n"
+)
+
+
+def make_shell_disk(path, size_mb=64, extra=(), script=SHELL_SCRIPT):
+    sys.path.insert(0, os.path.join(ROOT, "tests"))
+    import fatdisk
+    big = bytes((i * 131 + (i >> 12)) & 0xFF for i in range(3000000))
+    files = [("EFI/BOOT/BOOTAA64.EFI", open(os.path.join(FW, "Shell.efi"), "rb").read()),
+             ("startup.nsh", script.encode()),
+             ("hello.txt", b"Hello from the NVMe disk\r\n"),
+             ("big.bin", big)] + list(extra)
+    fatdisk.create(path, size_mb, files)
+    return big
+
+
+def esp_file(raw_path, name):
+    sys.path.insert(0, os.path.join(ROOT, "tests"))
+    import fatdisk
+    try:
+        return fatdisk.Reader(raw_path).cat(name)
+    except (FileNotFoundError, AssertionError):
+        return None
+
+
+def run_disk_tests(vm, quiet, timeout):
+    import shutil
+    import tempfile
+    tool = os.path.join(ROOT, "build", "disktool")
+    failed = []
+    with tempfile.TemporaryDirectory() as d:
+        def boot(name, disks, want, verify):
+            vars_path = os.path.join(d, "vars.fd")
+            shutil.copy(os.path.join(FW, "QEMU_VARS.fd"), vars_path)
+            cmd = [vm, "-q", "-m", "1024", "-n", "60000000000", "-b", os.path.join(FW, "QEMU_EFI.fd"),
+                   "-v", vars_path]
+            for disk in disks:
+                cmd += ["-D", disk]
+            t0 = time.time()
+            try:
+                p = subprocess.run(cmd, capture_output=True, timeout=timeout)
+                out, code = (p.stdout + p.stderr).decode(errors="replace"), p.returncode
+            except subprocess.TimeoutExpired as e:
+                out, code = (e.stdout or b"").decode(errors="replace"), -1
+            clean = re.sub(r"\x1b\[[0-9;=]*[A-Za-z]", " ", out)
+            missing = [w for w in want if w not in clean]
+            problems = verify() if code == 0 else []
+            ok = code == 0 and not missing and not problems
+            if not quiet or not ok:
+                print(f"{'PASS' if ok else 'FAIL'}  {name:12s} exit={code:<4d} {time.time() - t0:5.2f}s")
+            if not ok:
+                failed.append(name)
+                for w in missing:
+                    print(f"      missing output: {w!r}")
+                for w in problems:
+                    print(f"      {w}")
+                print("      " + "\n      ".join(clean.strip().splitlines()[-10:]))
+
+        common = ["UEFI WindDroid NVMe Disk", "UEFI Interactive Shell", "BIG.BIN", "Hello from the NVMe disk",
+                  "SCRIPT-DONE", "Non-volatile memory subsystem"]
+
+        def verify_written(raw):
+            def f():
+                errs = []
+                if esp_file(raw, "copy.bin") != big:
+                    errs.append("copy.bin written by the guest differs from big.bin")
+                if esp_file(raw, "out.txt") != "written\r\n".encode("utf-16"):
+                    errs.append(f"out.txt content {esp_file(raw, 'out.txt')!r}")
+                return errs
+            return f
+
+        # raw image, plus a second NVMe disk with its own FAT volume
+        raw = os.path.join(d, "disk.img")
+        big = make_shell_disk(raw)
+        second = os.path.join(d, "second.img")
+        sys.path.insert(0, os.path.join(ROOT, "tests"))
+        import fatdisk
+        fatdisk.create(second, 40, [("second.txt", b"second NVMe disk\r\n")])
+        boot("nvme_raw", [raw, second], common + ["second NVMe disk"], verify_written(raw))
+
+        # the same disk as a VHDX (blocks allocated by the guest's writes)
+        raw2 = os.path.join(d, "disk2.img")
+        make_shell_disk(raw2)
+        vhdx = os.path.join(d, "disk.vhdx")
+        subprocess.run([tool, "convert", raw2, vhdx], check=True)
+
+        def verify_vhdx():
+            back = os.path.join(d, "back.img")
+            with open(back, "wb") as fo:
+                subprocess.run([tool, "dump", vhdx], stdout=fo, check=True)
+            return verify_written(back)()
+        boot("nvme_vhdx", [vhdx], common, verify_vhdx)
+
+        # read-only: the guest cannot change the image
+        raw3 = os.path.join(d, "disk3.img")
+        make_shell_disk(raw3, script=RO_SCRIPT)
+        before = open(raw3, "rb").read()
+
+        def verify_ro():
+            return [] if open(raw3, "rb").read() == before else ["read-only image was modified"]
+        boot("nvme_readonly", ["ro:" + raw3], ["UEFI Interactive Shell", "Hello from the NVMe disk",
+                                               "failed to open with create", "SCRIPT-DONE"],
+             verify_ro)
+    return failed
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--vm", default=os.path.join(ROOT, "build", "winddroid-vm"))
@@ -146,6 +272,8 @@ def main():
     if not args.no_firmware and os.path.exists(os.path.join(FW, "QEMU_EFI.fd")):
         failed += run_fw_tests(args.vm, args.quiet, max(args.timeout, 300))
         total += len(FW_TESTS)
+        failed += run_disk_tests(args.vm, args.quiet, max(args.timeout, 300))
+        total += 3
         acpiexec = os.environ.get("ACPIEXEC") or os.path.join(ROOT, "..", "ext", "acpica", "generate", "unix", "bin", "acpiexec")
         if os.path.exists(acpiexec):
             total += 1

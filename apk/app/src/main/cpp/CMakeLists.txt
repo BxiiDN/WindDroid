@@ -17,6 +17,9 @@ add_library(winddroid SHARED
     ${WD_ROOT}/devices/fwcfg.c
     ${WD_ROOT}/devices/pci.c
     ${WD_ROOT}/devices/ramfb.c
+    ${WD_ROOT}/devices/disk.c
+    ${WD_ROOT}/devices/nvme.c
+    ${WD_ROOT}/devices/image.c
     ${WD_ROOT}/host/machine.c
     ${WD_ROOT}/host/platform.c
     ${WD_ROOT}/host/fdt.c

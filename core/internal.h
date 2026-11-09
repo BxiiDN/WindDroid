@@ -164,6 +164,7 @@ struct wd_pcidev {
     uint64_t (*bar_read)(struct wd_machine *m, wd_pcidev *d, int bar, uint64_t off, int size);
     void (*bar_write)(struct wd_machine *m, wd_pcidev *d, int bar, uint64_t off, int size, uint64_t val);
     void (*on_cfg_write)(struct wd_machine *m, wd_pcidev *d, uint32_t off, int size, uint32_t val);
+    void (*on_free)(wd_pcidev *d);
     void *opaque;
 };
 
@@ -285,6 +286,8 @@ int wd_dma_read(wd_machine *m, uint64_t pa, void *buf, size_t len);
 int wd_dma_write(wd_machine *m, uint64_t pa, const void *buf, size_t len);
 void wd_pci_add(wd_machine *m, wd_pcidev *d);
 void wd_pci_host_init(wd_machine *m);
+int wd_pci_free_slot(wd_machine *m);
+void wd_pci_add_std_caps(wd_pcidev *d);
 int wd_phys_is_ram(wd_machine *m, uint64_t pa);
 
 void wd_gic_reset(wd_gic *g);

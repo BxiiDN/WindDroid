@@ -219,3 +219,15 @@ void wd_pci_host_init(wd_machine *m)
     wr16(h->cfg + 0x06, 0);
     wd_pci_add(m, h);
 }
+
+/* Lowest device number on bus 0 that has no function yet (0 is the host bridge). */
+int wd_pci_free_slot(wd_machine *m)
+{
+    for (int slot = 1; slot < 32; slot++) {
+        int used = 0;
+        for (int i = 0; i < m->npci; i++)
+            if ((m->pci[i]->devfn >> 3) == slot) used = 1;
+        if (!used) return slot;
+    }
+    return -1;
+}
