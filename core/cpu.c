@@ -605,6 +605,8 @@ static void ldst(wd_machine *m, uint32_t insn)
     wd_cpu *c = &m->cpu;
     int rt = insn & 31, rn = (insn >> 5) & 31;
 
+    if ((insn >> 26) & 1) { wd_simd_ldst(m, insn); return; }
+
     /* exclusive / ordered / CAS: size 001000 ... */
     if ((insn & 0x3F000000u) == 0x08000000u) { ldst_exclusive(m, insn); return; }
 
@@ -935,7 +937,8 @@ void wd_cpu_step(wd_machine *m)
         c->pc = pc + 4;
         break;
     case 7: case 15:                                    /* SIMD & FP data processing */
-        wd_undef(m);
+        wd_simd_dp(m, insn);
+        c->pc = pc + 4;
         break;
     default:
         wd_undef(m);

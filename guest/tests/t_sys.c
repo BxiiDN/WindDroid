@@ -48,12 +48,28 @@ static void test_exceptions(void)
     __asm__ volatile("adr %0, 1f\n 1: udf #0" : "=r"(pc) :: "memory");
     CHECK_EQ(last_esr >> 26, 0);
     CHECK_EQ(last_elr, pc);
+    /* FP/SIMD access traps with EC 0x07 while CPACR_EL1.FPEN disables it */
+    uint64_t cpacr = READ_SYS(cpacr_el1);
+    WRITE_SYS(cpacr_el1, 0);
+    ISB();
     last_esr = ~0ULL;
     __asm__ volatile(".inst 0x1e622820" ::: "memory");          /* fadd d0, d1, d2 */
-    CHECK_EQ(last_esr >> 26, 0);
+    CHECK_EQ(last_esr >> 26, 0x07);
     last_esr = ~0ULL;
     __asm__ volatile(".inst 0x4e228420" ::: "memory");          /* add v0.16b, v1.16b, v2.16b */
-    CHECK_EQ(last_esr >> 26, 0);
+    CHECK_EQ(last_esr >> 26, 0x07);
+    last_esr = ~0ULL;
+    __asm__ volatile("mrs x0, s3_3_c4_c4_0" ::: "x0", "memory"); /* FPCR */
+    CHECK_EQ(last_esr >> 26, 0x07);
+    WRITE_SYS(cpacr_el1, 3 << 20);
+    ISB();
+    last_esr = 0;
+    uint64_t dres;
+    __asm__ volatile("fmov d1, #1.5\n fmov d2, #2.25\n fadd d0, d1, d2\n fmov %0, d0" : "=r"(dres) :: "v0", "v1", "v2", "memory");
+    CHECK_EQ(last_esr, 0);
+    CHECK_EQ(dres, 0x400E000000000000ULL);                     /* 3.75 */
+    WRITE_SYS(cpacr_el1, cpacr);
+    ISB();
 
     /* unknown system register traps */
     last_esr = ~0ULL;
@@ -91,7 +107,7 @@ static void test_sysregs(void)
 {
     CHECK_EQ(READ_SYS(CurrentEL), 4);
     CHECK_EQ(READ_SYS(mpidr_el1) & 0xFFFFFF, 0);
-    CHECK_EQ((READ_SYS(id_aa64pfr0_el1) >> 16) & 0xF, 0xF);    /* FP not implemented */
+    CHECK_EQ((READ_SYS(id_aa64pfr0_el1) >> 16) & 0xFF, 0);     /* FP and AdvSIMD implemented */
     CHECK_EQ((READ_SYS(id_aa64isar0_el1) >> 20) & 0xF, 2);     /* LSE */
     CHECK_EQ((READ_SYS(id_aa64mmfr0_el1) >> 28) & 0xF, 0);     /* 4K granule */
     CHECK_EQ(READ_SYS(cntfrq_el0), 62500000);

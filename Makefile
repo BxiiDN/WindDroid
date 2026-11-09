@@ -5,11 +5,12 @@
 
 CC      ?= cc
 CFLAGS  ?= -O2 -g
-CFLAGS  += -std=c11 -D_GNU_SOURCE -Wall -Wextra -Wno-unused-parameter -Iinclude
+CFLAGS  += -frounding-math -std=c11 -D_GNU_SOURCE -Wall -Wextra -Wno-unused-parameter -Iinclude
 LDFLAGS ?=
+LDLIBS  := -lm
 
-ENGINE_SRC := core/cpu.c core/mmu.c core/sysreg.c devices/gic.c devices/simple.c host/machine.c
-ENGINE_HDR := include/winddroid.h core/internal.h
+ENGINE_SRC := core/cpu.c core/mmu.c core/sysreg.c core/simd.c core/fpu.c devices/gic.c devices/simple.c host/machine.c
+ENGINE_HDR := include/winddroid.h core/internal.h core/fpu.h
 
 BUILD := build
 
@@ -17,11 +18,11 @@ all: $(BUILD)/winddroid-vm
 
 $(BUILD)/winddroid-vm: $(ENGINE_SRC) host/main.c $(ENGINE_HDR)
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -o $@ $(ENGINE_SRC) host/main.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $(ENGINE_SRC) host/main.c $(LDFLAGS) $(LDLIBS)
 
 $(BUILD)/unit_tests: $(ENGINE_SRC) tests/unit_tests.c $(ENGINE_HDR)
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -Icore -o $@ $(ENGINE_SRC) tests/unit_tests.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -Icore -o $@ $(ENGINE_SRC) tests/unit_tests.c $(LDFLAGS) $(LDLIBS)
 
 guests:
 	$(MAKE) -C guest

@@ -46,6 +46,10 @@ typedef struct {
     /* generic timer */
     uint64_t cntv_ctl, cntv_cval, cntp_ctl, cntp_cval;
 
+    /* FP / AdvSIMD */
+    uint64_t v[32][2];       /* little-endian: v[n][0] holds bits 63..0 */
+    uint32_t fpcr, fpsr;
+
     /* exclusive monitor */
     uint64_t excl_addr;
     int excl_valid;
@@ -174,6 +178,11 @@ uint8_t *wd_phys_host(wd_machine *m, uint64_t pa);
 uint64_t wd_counter(wd_machine *m);
 void wd_update_timers(wd_machine *m);
 int wd_psci(wd_machine *m);
+
+/* simd.c / fpu.c */
+void wd_simd_dp(wd_machine *m, uint32_t insn);
+void wd_simd_ldst(wd_machine *m, uint32_t insn);
+void wd_fp_check(wd_machine *m);
 
 /* sysreg.c */
 bool wd_sysreg_read(wd_machine *m, uint32_t key, uint64_t *val);

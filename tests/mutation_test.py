@@ -54,6 +54,34 @@ MUTANTS = [
      "case 2: v = (uint32_t)v; break;", "case 2: v = (uint64_t)(int64_t)(int32_t)v; break;"),
     ("EL0 can read EL1-only pages", "core/mmu.c",
      "if (ap & 1) perm |= P_R0 | P_USER;", "perm |= P_R0; if (ap & 1) perm |= P_USER;"),
+    ("FP: default NaN ignores FPCR.DN", "core/fpu.c",
+     "    if (c->fpcr & FPCR_DN) r = default_nan(n);\n    return r;", "    return r;"),
+    ("FP: underflow detected after rounding", "core/fpu.c",
+     "            tiny = ((rz >> f.F) & ((1ULL << f.E) - 1)) == 0;", "            tiny = 0;"),
+    ("FP: round-to-nearest ties away", "core/fpu.c",
+     "case RM_RN: inc = cmp > 0 || (cmp == 0 && (sig & 1)); break;", "case RM_RN: inc = cmp >= 0; break;"),
+    ("FP: FMA NaN order wrong", "core/fpu.c",
+     "const fpv *ord[3] = { &A, &x, &y };", "const fpv *ord[3] = { &x, &y, &A };"),
+    ("FP: max(+0,-0) wrong sign", "core/fpu.c",
+     "int s = is_max ? (x.sign & y.sign) : (x.sign | y.sign);", "int s = x.sign;"),
+    ("FP: to-int saturation not flagged", "core/fpu.c",
+     "if (big || mag > lim) { c->fpsr |= FPSR_IOC;", "if (big || mag > lim) {"),
+    ("FP: FRSQRTE odd/even scale swapped", "core/fpu.c",
+     "unsigned scaled = (exp & 1) ? (128 | (unsigned)(fraction >> 45)) : (256 | (unsigned)(fraction >> 44));",
+     "unsigned scaled = (exp & 1) ? (256 | (unsigned)(fraction >> 44)) : (128 | (unsigned)(fraction >> 45));"),
+    ("SIMD: lane load selem from S bit", "core/simd.c",
+     "int selem = ((((int)(insn >> 13) & 1) << 1) | R) + 1;", "int selem = (((opcode & 1) << 1) | R) + 1;"),
+    ("SIMD: 64-bit vector ops keep upper half", "core/simd.c",
+     "    if (!q) memset(VB(c, rd) + 8, 0, 8);\n}", "}"),
+    ("SIMD: saturation does not set QC", "core/simd.c",
+     "    if (qc) c->fpsr |= FPSR_QC;\n    wr_vec(c, rd, res, q);\n    return 1;\n}\n\nstatic int simd_3diff",
+     "    wr_vec(c, rd, res, q);\n    return 1;\n}\n\nstatic int simd_3diff"),
+    ("SIMD: ZIP uses wrong half", "core/simd.c",
+     "se(res, 2 * i, esz, ge(A, i + part * half, esz));", "se(res, 2 * i, esz, ge(A, i, esz));"),
+    ("SIMD: TBL out-of-range keeps old byte", "core/simd.c",
+     "else if (!tbx) res[i] = 0;", ";"),
+    ("SIMD: rounding shift right not rounding", "core/simd.c",
+     "            if (opc & 4) v += (__int128)1 << (rsh - 1);", "            ;"),
 ]
 
 
@@ -65,7 +93,7 @@ def main():
     survived = []
     with tempfile.TemporaryDirectory() as tmp:
         work = os.path.join(tmp, "src")
-        shutil.copytree(ROOT, work, ignore=shutil.ignore_patterns(".git", "apk", "build"))
+        shutil.copytree(ROOT, work, ignore=shutil.ignore_patterns(".git", "apk", "build", "ext"))
         guests = os.path.join(ROOT, "guest", "build")
         for desc, path, old, new in MUTANTS:
             fpath = os.path.join(work, path)

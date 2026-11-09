@@ -2,6 +2,9 @@
     .section .text.boot, "ax"
     .global _start
 _start:
+    mov     x0, #(3 << 20)          /* CPACR_EL1.FPEN: no FP/SIMD traps */
+    msr     cpacr_el1, x0
+    isb
     ldr     x0, =__stack_top
     mov     sp, x0
     ldr     x0, =__bss_start
@@ -21,7 +24,7 @@ _start:
  * void exc_handler(struct frame *f, int kind)   kind = vector index 0..15 */
     .macro VEC kind
     .balign 0x80
-    sub     sp, sp, #272
+    sub     sp, sp, #(272 + 528)
     stp     x0, x1, [sp, #0]
     mov     x1, #\kind
     b       vec_common
@@ -67,8 +70,60 @@ vec_common:
     stp     x30, x2, [sp, #240]
     mrs     x2, sp_el0
     stp     x3, x2, [sp, #256]
+#ifndef NO_FP_SAVE
+    mrs     x2, cpacr_el1
+    tbz     x2, #20, 7f             /* FP disabled: nothing to save */
+    add     x2, sp, #272
+    stp     q0, q1, [x2, #0]
+    stp     q2, q3, [x2, #32]
+    stp     q4, q5, [x2, #64]
+    stp     q6, q7, [x2, #96]
+    stp     q8, q9, [x2, #128]
+    stp     q10, q11, [x2, #160]
+    stp     q12, q13, [x2, #192]
+    stp     q14, q15, [x2, #224]
+    stp     q16, q17, [x2, #256]
+    stp     q18, q19, [x2, #288]
+    stp     q20, q21, [x2, #320]
+    stp     q22, q23, [x2, #352]
+    stp     q24, q25, [x2, #384]
+    stp     q26, q27, [x2, #416]
+    stp     q28, q29, [x2, #448]
+    stp     q30, q31, [x2, #480]
+    mrs     x3, fpcr
+    mrs     x4, fpsr
+    str     x3, [x2, #512]
+    str     x4, [x2, #520]
+7:
+#endif
     mov     x0, sp
     bl      exc_handler
+#ifndef NO_FP_SAVE
+    mrs     x2, cpacr_el1
+    tbz     x2, #20, 8f
+    add     x2, sp, #272
+    ldp     q0, q1, [x2, #0]
+    ldp     q2, q3, [x2, #32]
+    ldp     q4, q5, [x2, #64]
+    ldp     q6, q7, [x2, #96]
+    ldp     q8, q9, [x2, #128]
+    ldp     q10, q11, [x2, #160]
+    ldp     q12, q13, [x2, #192]
+    ldp     q14, q15, [x2, #224]
+    ldp     q16, q17, [x2, #256]
+    ldp     q18, q19, [x2, #288]
+    ldp     q20, q21, [x2, #320]
+    ldp     q22, q23, [x2, #352]
+    ldp     q24, q25, [x2, #384]
+    ldp     q26, q27, [x2, #416]
+    ldp     q28, q29, [x2, #448]
+    ldp     q30, q31, [x2, #480]
+    ldr     x3, [x2, #512]
+    ldr     x4, [x2, #520]
+    msr     fpcr, x3
+    msr     fpsr, x4
+8:
+#endif
     ldp     x3, x2, [sp, #256]
     msr     sp_el0, x2
     ldp     x30, x2, [sp, #240]
@@ -89,6 +144,6 @@ vec_common:
     ldp     x26, x27, [sp, #208]
     ldp     x28, x29, [sp, #224]
     ldp     x0, x1, [sp, #0]
-    add     sp, sp, #272
+    add     sp, sp, #(272 + 528)
     eret
     .ltorg

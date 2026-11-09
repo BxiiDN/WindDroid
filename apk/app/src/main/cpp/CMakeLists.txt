@@ -9,10 +9,12 @@ add_library(winddroid SHARED
     ${WD_ROOT}/core/cpu.c
     ${WD_ROOT}/core/mmu.c
     ${WD_ROOT}/core/sysreg.c
+    ${WD_ROOT}/core/simd.c
+    ${WD_ROOT}/core/fpu.c
     ${WD_ROOT}/devices/gic.c
     ${WD_ROOT}/devices/simple.c
     ${WD_ROOT}/host/machine.c)
 
 target_include_directories(winddroid PRIVATE ${WD_ROOT}/include ${WD_ROOT}/core)
-target_compile_options(winddroid PRIVATE -O2 -std=c11 -D_GNU_SOURCE -Wall -Wno-unused-parameter)
-target_link_libraries(winddroid log)
+target_compile_options(winddroid PRIVATE -O2 -frounding-math -std=c11 -D_GNU_SOURCE -Wall -Wno-unused-parameter)
+target_link_libraries(winddroid log m)

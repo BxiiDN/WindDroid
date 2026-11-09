@@ -9,7 +9,7 @@
 /* ID register values advertised to the guest. */
 #define V_MIDR          0x000F0510ULL
 #define V_MPIDR         0x80000000ULL
-#define V_PFR0          0x01FF0011ULL   /* EL0/EL1 AArch64, no FP/SIMD, GICv3 sysregs */
+#define V_PFR0          0x01000011ULL   /* EL0/EL1 AArch64, FP + AdvSIMD, GICv3 sysregs */
 #define V_DFR0          0x00000006ULL
 #define V_ISAR0         0x00210000ULL   /* CRC32, LSE atomics */
 #define V_ISAR1         0x00100000ULL   /* LRCPC */
@@ -36,6 +36,8 @@ static int el0_allowed(wd_machine *m, uint32_t key)
     case SR(3, 3, 13, 0, 3):                             /* TPIDRRO_EL0 (read) */
     case SR(3, 3, 14, 0, 0):                             /* CNTFRQ_EL0 */
     case SR(3, 3, 0, 0, 7):                              /* DCZID_EL0 */
+    case SR(3, 3, 4, 4, 0):                              /* FPCR */
+    case SR(3, 3, 4, 4, 1):                              /* FPSR */
         return 1;
     case SR(3, 3, 4, 2, 1):                              /* DAIF */
         return (c->sctlr >> 9) & 1;
@@ -121,6 +123,9 @@ bool wd_sysreg_read(wd_machine *m, uint32_t key, uint64_t *val)
     case SR(3, 3, 4, 2, 1): *val = c->daif; return true;
     case SR(3, 3, 13, 0, 2): *val = c->tpidr_el0; return true;
     case SR(3, 3, 13, 0, 3): *val = c->tpidrro_el0; return true;
+    case SR(3, 3, 4, 4, 0): wd_fp_check(m); *val = c->fpcr; return true;
+    case SR(3, 3, 4, 4, 1): wd_fp_check(m); *val = c->fpsr; return true;
+    case SR(3, 0, 0, 3, 0): *val = 0x00000000ULL; return true;    /* MVFR0_EL1 (AArch32 only): RAZ */
 
     case SR(3, 3, 14, 0, 0): *val = CNT_FREQ; return true;
     case SR(3, 3, 14, 0, 1): case SR(3, 3, 14, 0, 2):
@@ -204,6 +209,8 @@ bool wd_sysreg_write(wd_machine *m, uint32_t key, uint64_t v)
     case SR(3, 3, 4, 2, 1): c->daif = (uint32_t)v & 0x3C0u; m->irq_dirty = 1; return true;
     case SR(3, 3, 13, 0, 2): c->tpidr_el0 = v; return true;
     case SR(3, 3, 13, 0, 3): c->tpidrro_el0 = v; return true;
+    case SR(3, 3, 4, 4, 0): wd_fp_check(m); c->fpcr = (uint32_t)v & 0x07C80000u; return true;
+    case SR(3, 3, 4, 4, 1): wd_fp_check(m); c->fpsr = (uint32_t)v & 0xF800009Fu; return true;
 
     case SR(3, 3, 14, 0, 0): return true;                /* CNTFRQ_EL0: fixed */
     case SR(3, 3, 14, 2, 0): c->cntp_cval = wd_counter(m) + wd_sext(v, 32); m->irq_dirty = 1; return true;
