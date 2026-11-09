@@ -15,7 +15,7 @@ echo "adb: $(command -v adb)"
 adb install -r "$APK" > install.log 2>&1 || { annotate error "adb install failed" install.log; exit 1; }
 adb logcat -c
 adb shell am start -W -n com.bxiidn.winddroid/.MainActivity --ez autorun true \
-    --es input "help;info;selftest;bench;uptime;poweroff" > start.log 2>&1 || { annotate error "am start failed" start.log; exit 1; }
+    --es input "'help;info;selftest;bench;uptime;poweroff'" > start.log 2>&1 || { annotate error "am start failed" start.log; exit 1; }
 for i in $(seq 1 90); do
     if adb logcat -d -s WindDroid:I | grep -q "STOPPED"; then break; fi
     sleep 2
