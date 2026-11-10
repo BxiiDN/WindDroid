@@ -630,6 +630,7 @@ uint64_t wd_jit_run(wd_machine *m, uint64_t max)
         }
         if (!b->n || b->n > max - done) break;
         b->fn(m, c);
+        if (m->trace == 2) wd_state_trace(m);
         done += b->n;
         m->budget -= b->n;
         if (m->stop >= 0 || m->irq_dirty || m->wfi) break;

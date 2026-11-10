@@ -252,6 +252,7 @@ struct wd_machine {
 void wd_cpu_reset(wd_machine *m);
 void wd_cpu_step(wd_machine *m);
 void wd_cpu_run(wd_machine *m, uint64_t n);
+void wd_state_trace(wd_machine *m);
 /* jit.c */
 uint64_t wd_jit_run(wd_machine *m, uint64_t max);
 void wd_jit_free(wd_machine *m);

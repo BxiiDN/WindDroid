@@ -20,11 +20,23 @@ def main():
     env = dict(os.environ, WD_JIT_MAX="1")
     a, _ = trace(vm, extra + [elf], env)
     b, out = trace(vm, ["-J"] + extra + [elf], env)
-    for i, (x, y) in enumerate(zip(a, b)):
+    # the translator reports after each block: compare at equal instruction counts
+    ref = {}
+    for i, l in enumerate(a):
+        ref.setdefault(l.split()[0], i)
+    for y in b:
+        cnt = y.split()[0]
+        if cnt not in ref:
+            continue
+        i = ref[cnt]
+        x = a[i]
         if x != y:
             print(f"first difference at step {i}:")
+            j = b.index(y)
             for k in range(max(0, i - 6), min(i + 2, len(a))):
-                print(f"  interp {a[k]:45s}  jit {b[k] if k < len(b) else ''}")
+                print(f"  interp {a[k]}")
+            for k in range(max(0, j - 3), min(j + 2, len(b))):
+                print(f"  jit    {b[k]}")
             pc = int(a[i - 1].split()[1], 16) if i else 0
             dis = subprocess.run(["llvm-objdump", "-d", "--no-show-raw-insn", elf], capture_output=True, text=True).stdout
             for line in dis.splitlines():
