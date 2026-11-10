@@ -136,6 +136,24 @@ static void epilogue(emitter *e)
     emit(e, 0xD65F03C0u);              /* ret */
 }
 
+/* After an access that may have touched a device: leave the block when the run loop
+ * has something to do (interrupt state changed, stop requested), so interrupts are
+ * taken at the same instruction boundary as in the interpreter. */
+static void exit_check(emitter *e, uint64_t next_pc)
+{
+    mov_imm(e, T1, (uint64_t)offsetof(wd_machine, irq_dirty));
+    emit(e, 0xB8606800u | (uint32_t)T1 << 16 | (uint32_t)HM << 5 | (uint32_t)T0);    /* ldr w9, [x20, x10] */
+    mov_imm(e, T1, (uint64_t)offsetof(wd_machine, stop));
+    emit(e, 0xB8606800u | (uint32_t)T1 << 16 | (uint32_t)HM << 5 | (uint32_t)T1);    /* ldr w10, [x20, x10] */
+    emit(e, 0x2A2A03EAu);                                     /* mvn w10, w10 */
+    emit(e, 0x2A4A7D29u);                                     /* orr w9, w9, w10, lsr #31 */
+    uint32_t *br = e->p;
+    emit(e, 0x34000000u | T0);                                /* cbz w9, continue (patched) */
+    set_pc(e, next_pc);
+    epilogue(e);
+    if (!e->overflow) *br |= (uint32_t)(e->p - br) << 5;
+}
+
 /* ---------------------------------------------------------------- register mapping */
 
 typedef struct {
@@ -396,6 +414,7 @@ static int tr_ldst(emitter *e, uint32_t sp_off, uint32_t insn, uint64_t pc)
             add_imm64(e, T0, T0, off);
             str_x(e, T0, HC, rn == 31 ? sp_off : OFF_X(rn));
         }
+        exit_check(e, pc + 4);
         return 1;
     }
     /* load/store pair (integer): opc 101 0 mode L imm7 */
@@ -447,6 +466,7 @@ static int tr_ldst(emitter *e, uint32_t sp_off, uint32_t insn, uint64_t pc)
             add_imm64(e, T0, T0, off);
             str_x(e, T0, HC, rn == 31 ? sp_off : OFF_X(rn));
         }
+        exit_check(e, pc + 4);
         return 1;
     }
     return 0;
@@ -642,10 +662,12 @@ uint64_t wd_jit_run(wd_machine *m, uint64_t max)
             j->bucket[h] = b;
         }
         if (!b->n || b->n > max - done) break;
+        uint64_t before = c->icount;
         b->fn(m, c);
         if (m->trace == 2) wd_state_trace(m);
-        done += b->n;
-        m->budget -= b->n;
+        uint64_t ran = c->icount - before;             /* fewer than b->n on an early exit */
+        done += ran;
+        m->budget -= ran;
         if (m->stop >= 0 || m->irq_dirty || m->wfi) break;
     }
     return done;
