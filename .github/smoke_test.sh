@@ -44,7 +44,7 @@ adb logcat -d -s WindDroid:I > uefi.log
 adb logcat -d | grep -E -A20 "FATAL EXCEPTION|F libc|F DEBUG" > crash2.log || true
 tail -c 4000 uefi.log
 annotate notice "UEFI output" uefi.log
-for want in "UEFI firmware" "FB 800x600" "Press any key to enter the Boot Manager Menu" "TYPING on the USB keyboard" "Please select boot device"; do
+for want in "UEFI firmware" "FB 800x600" "Press any key to enter the Boot Manager Menu" "TYPING on the USB keyboard" "BootManagerMenuApp" "Please select boot device"; do
     if grep -qF "$want" uefi.log; then echo "ok: $want"; else echo "::error::missing UEFI output: $want"; fail=1; fi
 done
 if grep -q "STOPPED" uefi.log; then echo "::error::VM stopped unexpectedly"; fail=1; fi

@@ -928,19 +928,195 @@ static void dp_reg(wd_machine *m, uint32_t insn)
 
 /* ------------------------------------------------------------ dispatcher */
 
-void wd_cpu_step(wd_machine *m)
+/* ---------------------------------------------------------------- fast paths
+ * The most frequent integer forms executed without the general decoder. Every
+ * case falls back to the general path (return 0) for anything unusual; the
+ * results are identical (checked by the random ALU/memory tests). */
+
+static inline uint32_t flags_add64(uint64_t a, uint64_t b, uint64_t r)
+{
+    return (uint32_t)((r >> 63) << 31) | (uint32_t)(r == 0) << 30 | (uint32_t)(r < a) << 29 |
+           (uint32_t)(((~(a ^ b) & (a ^ r)) >> 63) << 28);
+}
+static inline uint32_t flags_sub64(uint64_t a, uint64_t b, uint64_t r)
+{
+    return (uint32_t)((r >> 63) << 31) | (uint32_t)(r == 0) << 30 | (uint32_t)(a >= b) << 29 |
+           (uint32_t)((((a ^ b) & (a ^ r)) >> 63) << 28);
+}
+static inline uint32_t flags_add32(uint32_t a, uint32_t b, uint32_t r)
+{
+    return (r >> 31) << 31 | (uint32_t)(r == 0) << 30 | (uint32_t)(r < a) << 29 | ((~(a ^ b) & (a ^ r)) >> 31) << 28;
+}
+static inline uint32_t flags_sub32(uint32_t a, uint32_t b, uint32_t r)
+{
+    return (r >> 31) << 31 | (uint32_t)(r == 0) << 30 | (uint32_t)(a >= b) << 29 | (((a ^ b) & (a ^ r)) >> 31) << 28;
+}
+
+static inline uint64_t fast_shift(uint64_t v, int type, int amt, int sf)
+{
+    if (!amt) return v;
+    if (sf) {
+        switch (type) {
+        case 0: return v << amt;
+        case 1: return v >> amt;
+        case 2: return (uint64_t)((int64_t)v >> amt);
+        default: return (v >> amt) | (v << (64 - amt));
+        }
+    }
+    uint32_t w = (uint32_t)v;
+    switch (type) {
+    case 0: return (uint32_t)(w << amt);
+    case 1: return w >> amt;
+    case 2: return (uint32_t)((int32_t)w >> amt);
+    default: return (uint32_t)((w >> amt) | (w << (32 - amt)));
+    }
+}
+
+static inline int fast_exec(wd_machine *m, wd_cpu *c, uint32_t insn, uint64_t pc)
+{
+    int rd = insn & 31, rn = (insn >> 5) & 31;
+    int sf = insn >> 31;
+
+    if ((insn & 0x1F000000u) == 0x0A000000u) {               /* logical (shifted register) */
+        int shift = (insn >> 22) & 3, amt = (insn >> 10) & 63, opc = (insn >> 29) & 3;
+        if (!sf && amt > 31) return 0;
+        uint64_t a = rn == 31 ? 0 : c->x[rn];
+        int rm = (insn >> 16) & 31;
+        uint64_t b = fast_shift(rm == 31 ? 0 : c->x[rm], shift, amt, sf);
+        if (!sf) { a = (uint32_t)a; b = (uint32_t)b; }
+        if ((insn >> 21) & 1) b = sf ? ~b : (uint32_t)~b;
+        uint64_t r;
+        switch (opc) {
+        case 0: r = a & b; break;
+        case 1: r = a | b; break;
+        case 2: r = a ^ b; break;
+        default:
+            r = a & b;
+            c->nzcv = sf ? (uint32_t)((r >> 63) << 31) | (uint32_t)(r == 0) << 30
+                         : (uint32_t)(((uint32_t)r >> 31) << 31) | (uint32_t)((uint32_t)r == 0) << 30;
+            break;
+        }
+        if (rd != 31) c->x[rd] = r;
+        c->pc = pc + 4;
+        return 1;
+    }
+    if ((insn & 0x1F200000u) == 0x0B000000u) {               /* add/sub (shifted register) */
+        int shift = (insn >> 22) & 3, amt = (insn >> 10) & 63;
+        if (shift == 3 || (!sf && amt > 31)) return 0;
+        int sub = (insn >> 30) & 1, S = (insn >> 29) & 1, rm = (insn >> 16) & 31;
+        uint64_t a = rn == 31 ? 0 : c->x[rn];
+        uint64_t b = fast_shift(rm == 31 ? 0 : c->x[rm], shift, amt, sf);
+        uint64_t r;
+        if (sf) {
+            r = sub ? a - b : a + b;
+            if (S) c->nzcv = sub ? flags_sub64(a, b, r) : flags_add64(a, b, r);
+        } else {
+            uint32_t a32 = (uint32_t)a, b32 = (uint32_t)b, r32 = sub ? a32 - b32 : a32 + b32;
+            if (S) c->nzcv = sub ? flags_sub32(a32, b32, r32) : flags_add32(a32, b32, r32);
+            r = r32;
+        }
+        if (rd != 31) c->x[rd] = r;
+        c->pc = pc + 4;
+        return 1;
+    }
+    if ((insn & 0x1F000000u) == 0x11000000u) {               /* add/sub (immediate) */
+        if ((insn >> 23) & 1) return 0;                      /* tag variants */
+        int sub = (insn >> 30) & 1, S = (insn >> 29) & 1;
+        uint64_t imm = (insn >> 10) & 0xFFF;
+        if ((insn >> 22) & 1) imm <<= 12;
+        uint64_t a = rn == 31 ? *wd_sp_ptr(c) : c->x[rn];
+        uint64_t r;
+        if (sf) {
+            r = sub ? a - imm : a + imm;
+            if (S) c->nzcv = sub ? flags_sub64(a, imm, r) : flags_add64(a, imm, r);
+        } else {
+            uint32_t a32 = (uint32_t)a, b32 = (uint32_t)imm, r32 = sub ? a32 - b32 : a32 + b32;
+            if (S) c->nzcv = sub ? flags_sub32(a32, b32, r32) : flags_add32(a32, b32, r32);
+            r = r32;
+        }
+        if (rd == 31) { if (!S) *wd_sp_ptr(c) = r; }
+        else c->x[rd] = r;
+        c->pc = pc + 4;
+        return 1;
+    }
+    if ((insn & 0x7C000000u) == 0x14000000u) {               /* B, BL */
+        int64_t off = (int64_t)((uint64_t)(insn & 0x03FFFFFFu) << 38) >> 36;
+        if (insn >> 31) c->x[30] = pc + 4;
+        c->pc = pc + (uint64_t)off;
+        return 1;
+    }
+    if ((insn & 0xFF000010u) == 0x54000000u) {               /* B.cond */
+        int64_t off = (int64_t)((uint64_t)((insn >> 5) & 0x7FFFF) << 45) >> 43;
+        c->pc = cond_holds(c->nzcv, insn & 15) ? pc + (uint64_t)off : pc + 4;
+        return 1;
+    }
+    if ((insn & 0x7E000000u) == 0x34000000u) {               /* CBZ, CBNZ */
+        int64_t off = (int64_t)((uint64_t)((insn >> 5) & 0x7FFFF) << 45) >> 43;
+        uint64_t v = rd == 31 ? 0 : c->x[rd];
+        if (!sf) v = (uint32_t)v;
+        int take = ((insn >> 24) & 1) ? v != 0 : v == 0;
+        c->pc = take ? pc + (uint64_t)off : pc + 4;
+        return 1;
+    }
+    if ((insn & 0x7E000000u) == 0x36000000u) {               /* TBZ, TBNZ */
+        int64_t off = (int64_t)((uint64_t)((insn >> 5) & 0x3FFF) << 50) >> 48;
+        int bit = (int)((insn >> 31) << 5 | ((insn >> 19) & 31));
+        uint64_t v = rd == 31 ? 0 : c->x[rd];
+        int set = (v >> bit) & 1;
+        int take = ((insn >> 24) & 1) ? set : !set;
+        c->pc = take ? pc + (uint64_t)off : pc + 4;
+        return 1;
+    }
+    if ((insn & 0xFFFFFC1Fu) == 0xD65F0000u) {               /* RET */
+        c->pc = rn == 31 ? 0 : c->x[rn];
+        return 1;
+    }
+    if ((insn & 0x1FE00800u) == 0x1A800000u && !((insn >> 29) & 1)) {   /* CSEL, CSINC, CSINV, CSNEG */
+        int rm = (insn >> 16) & 31, op = (insn >> 30) & 1, o2 = (insn >> 10) & 1;
+        uint64_t r;
+        if (cond_holds(c->nzcv, (insn >> 12) & 15)) r = rn == 31 ? 0 : c->x[rn];
+        else {
+            r = rm == 31 ? 0 : c->x[rm];
+            if (op) r = ~r;
+            if (o2) r = r + 1;
+        }
+        if (!sf) r = (uint32_t)r;
+        if (rd != 31) c->x[rd] = r;
+        c->pc = pc + 4;
+        return 1;
+    }
+    if ((insn & 0x3F000000u) == 0x39000000u) {               /* LDR/STR (unsigned offset), integer */
+        int size = insn >> 30, opc = (insn >> 22) & 3;
+        if (opc > 1) return 0;
+        uint64_t addr = (rn == 31 ? *wd_sp_ptr(c) : c->x[rn]) + (((insn >> 10) & 0xFFFULL) << size);
+        int bytes = 1 << size;
+        if (opc == 0) wd_write(m, addr, bytes, rd == 31 ? 0 : c->x[rd], 0);
+        else {
+            uint64_t v = wd_read(m, addr, bytes, 0);
+            if (rd != 31) c->x[rd] = v;
+        }
+        c->pc = pc + 4;
+        return 1;
+    }
+    if ((insn & 0x1F800000u) == 0x12800000u) {               /* MOVN, MOVZ, MOVK */
+        int opc = (insn >> 29) & 3, hw = (insn >> 21) & 3;
+        if (opc == 1 || (!sf && hw > 1)) return 0;
+        uint64_t imm = (uint64_t)((insn >> 5) & 0xFFFF) << (16 * hw), r;
+        if (opc == 0) r = ~imm;
+        else if (opc == 2) r = imm;
+        else r = ((rd == 31 ? 0 : c->x[rd]) & ~(0xFFFFULL << (16 * hw))) | imm;
+        if (!sf) r = (uint32_t)r;
+        if (rd != 31) c->x[rd] = r;
+        c->pc = pc + 4;
+        return 1;
+    }
+    return 0;
+}
+
+/* General decoder for one instruction (pc already checked and fetched). */
+static __attribute__((noinline)) void step_general(wd_machine *m, uint32_t insn, uint64_t pc)
 {
     wd_cpu *c = &m->cpu;
-    uint64_t pc = c->pc;
-    if (pc & 3) wd_exception(m, EC_PC_ALIGN, 0, pc, 1, pc);
-    uint32_t insn = wd_fetch(m, pc);
-
-    if (m->trace) {
-        fprintf(stderr, "[%llu] EL%d pc=%016llx insn=%08x\n", (unsigned long long)c->icount,
-                c->el, (unsigned long long)pc, insn);
-    }
-
-    c->icount++;
     uint32_t op0 = (insn >> 25) & 15;
     switch (op0) {
     case 8: case 9:
@@ -964,5 +1140,54 @@ void wd_cpu_step(wd_machine *m)
         break;
     default:
         wd_undef(m);
+    }
+}
+
+static inline uint32_t fetch_inline(wd_machine *m, uint64_t pc)
+{
+    if (__builtin_expect((pc >> 12) == m->fetch_vpn && m->fetch_el == m->cpu.el, 1)) {
+        uint32_t insn;
+        memcpy(&insn, m->fetch_host + (pc & 0xFFF), 4);
+        return insn;
+    }
+    return wd_fetch(m, pc);
+}
+
+void wd_cpu_step(wd_machine *m)
+{
+    wd_cpu *c = &m->cpu;
+    uint64_t pc = c->pc;
+    if (pc & 3) wd_exception(m, EC_PC_ALIGN, 0, pc, 1, pc);
+    uint32_t insn = fetch_inline(m, pc);
+    if (m->trace) {
+        fprintf(stderr, "[%llu] EL%d pc=%016llx insn=%08x\n", (unsigned long long)c->icount,
+                c->el, (unsigned long long)pc, insn);
+    }
+    c->icount++;
+    if (!m->no_fast && fast_exec(m, c, insn, pc)) return;
+    step_general(m, insn, pc);
+}
+
+/* Run up to n instructions; returns early when the run loop has something to do
+ * (stop request, interrupt state change, WFI). Exceptions longjmp out as usual. */
+void wd_cpu_run(wd_machine *m, uint64_t n)
+{
+    wd_cpu *c = &m->cpu;
+    if (m->trace || m->no_fast) {
+        while (n--) {
+            wd_cpu_step(m);
+            m->budget--;
+            if (m->stop >= 0 || m->irq_dirty || m->wfi) return;
+        }
+        return;
+    }
+    while (n--) {
+        uint64_t pc = c->pc;
+        if (__builtin_expect(pc & 3, 0)) wd_exception(m, EC_PC_ALIGN, 0, pc, 1, pc);
+        uint32_t insn = fetch_inline(m, pc);
+        c->icount++;
+        if (!fast_exec(m, c, insn, pc)) step_general(m, insn, pc);
+        m->budget--;
+        if (__builtin_expect(m->stop >= 0 || m->irq_dirty || m->wfi, 0)) return;
     }
 }

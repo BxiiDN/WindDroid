@@ -30,6 +30,10 @@ TESTS = [
     ("t_float", [], subprocess.run([sys.executable, os.path.join(ROOT, "tests", "float_ref.py")],
                                    capture_output=True, text=True).stdout.split("\n")[:3]),
     ("t_msi", ["-U", "-D", "{msidisk}"], ["msi: 0 failures"]),
+    # the same programs through the general decoder only
+    ("alu_gen", ["-X"], ["alu: 4000 checks, 0 failures"]),
+    ("mem_gen", ["-X"], ["mem: 4117 checks, 0 failures"]),
+    ("t_cprog_O2", ["-X"], ["t_cprog: 0 failures"]),
     ("monitor", ["-i", "help\\ninfo\\nselftest\\nprimes 50\\nmandel\\nbench\\npoweroff\\n"],
      ["WindDroid Monitor", "selftest: all 6 checks passed",
       "2 3 5 7 11 13 17 19 23 29 31 37 41 43 47", "sha256(abc) = ba7816bf", "Powering off"]),

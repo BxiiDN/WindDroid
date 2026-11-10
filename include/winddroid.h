@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define WD_VERSION "0.1.1"
+#define WD_VERSION "0.2.0"
 
 typedef struct wd_machine wd_machine;
 
@@ -148,6 +148,8 @@ uint64_t    wd_icount(wd_machine *m);
 uint64_t    wd_pc(wd_machine *m);
 const char *wd_error(wd_machine *m);
 void        wd_set_trace(wd_machine *m, int on);
+/* Engine options: "no_fast" (general decoder only). Returns 0 if known. */
+int         wd_set_option(wd_machine *m, const char *name, int value);
 void        wd_dump_state(wd_machine *m, char *buf, size_t len);
 
 #ifdef __cplusplus

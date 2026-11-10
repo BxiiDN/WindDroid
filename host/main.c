@@ -20,6 +20,7 @@
  *     -c FILE        attach an ISO image as a USB DVD drive
  *     -u FILE        attach a disk image as a USB disk ("ro:FILE" read-only)
  *     -U             attach a USB keyboard and a USB tablet
+ *     -X             general instruction decoder only (no fast paths), for testing
  *     -K TEXT=INPUT  type INPUT on the USB keyboard once TEXT has appeared on the serial port
  *
  * Exit status: guest exit code (control device), 0 after PSCI SYSTEM_OFF,
@@ -92,7 +93,7 @@ static uint8_t *read_file(const char *path, size_t *len)
 #define MAX_DISKS 8
 static const char *disks[MAX_DISKS];
 static int disk_kind[MAX_DISKS];
-static int ndisks, usb_hid;
+static int ndisks, usb_hid, no_fast;
 static int key_usb[MAX_KEYS];
 /* pending USB keystrokes: one key change per run slice so the guest sees every report */
 static int usb_type_ev[4096][2];
@@ -123,7 +124,7 @@ int main(int argc, char **argv)
     int realtime = 0, trace = 0, quiet = 0, opt, interactive = 0;
     const char *input = NULL, *bios = NULL, *vars_path = NULL, *dtb_path = NULL, *fb_path = NULL, *acpi_dir = NULL;
 
-    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:IF:A:D:c:u:UK:")) != -1) {
+    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:IF:A:D:c:u:UK:X")) != -1) {
         switch (opt) {
         case 'm': ram_mb = strtoull(optarg, NULL, 0); break;
         case 'n': limit = strtoull(optarg, NULL, 0); break;
@@ -142,6 +143,7 @@ int main(int argc, char **argv)
             if (ndisks < MAX_DISKS) { disks[ndisks] = optarg; disk_kind[ndisks++] = opt; }
             break;
         case 'U': usb_hid = 1; break;
+        case 'X': no_fast = 1; break;
         case 'K': {
             char *eq = strchr(optarg, '=');
             if (eq && nkeys < MAX_KEYS) { *eq = 0; key_after[nkeys] = optarg; key_input[nkeys] = eq + 1; key_usb[nkeys++] = 1; }
@@ -175,6 +177,7 @@ int main(int argc, char **argv)
     if (!m) { fprintf(stderr, "out of memory\n"); return 2; }
     wd_set_uart_tx(m, tx, NULL);
     wd_set_trace(m, trace);
+    if (no_fast) wd_set_option(m, "no_fast", 1);
     if (bios) {
         size_t blen, vlen = 0;
         uint8_t *code = read_file(bios, &blen), *vars = NULL;

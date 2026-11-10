@@ -227,6 +227,7 @@ struct wd_machine {
     int irq_pend;
     int exit_code;
     int trace;
+    int no_fast;             /* use only the general decoder (tests) */
     uint64_t idle_ns;
     int wfi;
 
@@ -248,6 +249,7 @@ struct wd_machine {
 /* cpu.c */
 void wd_cpu_reset(wd_machine *m);
 void wd_cpu_step(wd_machine *m);
+void wd_cpu_run(wd_machine *m, uint64_t n);
 void wd_take_irq(wd_machine *m);
 void wd_undef(wd_machine *m);
 _Noreturn void wd_exception(wd_machine *m, uint32_t ec, uint32_t iss, uint64_t far,

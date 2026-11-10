@@ -223,8 +223,21 @@ static void test_atomics(void)
     CHECK_EQ(r, 0xABC);
 }
 
+static void test_tbz(void)
+{
+    uint64_t hi = 1ULL << 40, lo = 1ULL << 8;
+    int r1, r2, r3;
+    __asm__ volatile("mov %w0, #0\n tbz %x1, #40, 1f\n mov %w0, #1\n1:" : "=&r"(r1) : "r"(hi));
+    __asm__ volatile("mov %w0, #0\n tbnz %x1, #40, 1f\n mov %w0, #1\n1:" : "=&r"(r2) : "r"(lo));
+    __asm__ volatile("mov %w0, #0\n tbnz %w1, #8, 1f\n mov %w0, #1\n1:" : "=&r"(r3) : "r"(lo));
+    CHECK_EQ(r1, 1);
+    CHECK_EQ(r2, 1);
+    CHECK_EQ(r3, 0);
+}
+
 int main(void)
 {
+    test_tbz();
     test_exceptions();
     test_sysregs();
     test_atomics();

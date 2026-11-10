@@ -190,12 +190,13 @@ public class VmActivity extends Activity implements Engine.Listener {
         if (logOutput) {
             for (int i = 0; i < s.length(); i++) {
                 char c = s.charAt(i);
-                if (c == '\n') {
-                    Log.i(TAG, logLine.toString().replaceAll("\u001b\\[[0-9;=?]*[A-Za-z]", " "));
+                // menus are drawn with cursor positioning: a cursor move or CR also ends a log line
+                if (c == '\n' || ((c == 27 || c == '\r') && logLine.length() > 0) || logLine.length() > 300) {
+                    String line = logLine.toString().replaceAll("\u001b\\[[0-9;=?]*[A-Za-z]", " ").trim();
+                    if (!line.isEmpty()) Log.i(TAG, line);
                     logLine.setLength(0);
-                } else if (c != '\r') {
-                    logLine.append(c);
                 }
+                if (c != '\n' && c != '\r') logLine.append(c);
             }
         }
         if (typeAfter != null) {

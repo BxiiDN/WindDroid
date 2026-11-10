@@ -38,6 +38,12 @@ wd_machine *wd_create(const wd_config *cfg)
     return m;
 }
 
+int wd_set_option(wd_machine *m, const char *name, int value)
+{
+    if (!strcmp(name, "no_fast")) { m->no_fast = value; return 0; }
+    return -1;
+}
+
 void wd_destroy(wd_machine *m)
 {
     if (!m) return;
@@ -351,8 +357,10 @@ wd_run_result wd_run(wd_machine *m, uint64_t max_insns)
             }
         }
         if (m->irq_pend && !(c->daif & DAIF_I)) { m->irq_pend = 0; wd_take_irq(m); }
-        wd_cpu_step(m);
-        m->budget--;
+        /* run until the next periodic interrupt check (every 256 instructions) */
+        uint64_t n = 256 - (c->icount & 255);
+        if (n > m->budget) n = m->budget;
+        wd_cpu_run(m, n);
         if (m->stop >= 0) goto done;
     }
     return WD_RUN_BUDGET;
