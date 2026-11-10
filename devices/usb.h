@@ -23,7 +23,7 @@ typedef struct {
 struct wd_usbdev {
     int speed;
     int configuration;
-    int alt_setting;
+    int alt[4];                         /* alternate setting per interface */
     int halted_in[16], halted_out[16];
     const wd_usb_descs *descs;
     /* class/vendor control requests (after the standard ones); IN: fill data, return length;
@@ -31,6 +31,9 @@ struct wd_usbdev {
     int (*class_control)(wd_usbdev *d, const uint8_t *setup, uint8_t *data);
     /* bulk/interrupt transfer on endpoint 1..15: returns bytes moved, USB_RET_NAK or USB_RET_STALL */
     int (*data)(wd_usbdev *d, int ep, int in, uint8_t *buf, int len);
+    /* SET_INTERFACE: 0 accepts the alternate setting, -1 stalls; iface -1 = SET_CONFIGURATION
+     * (all interfaces back to setting 0). Without it only setting 0 exists. */
+    int (*set_interface)(wd_usbdev *d, int iface, int alt);
     void (*reset)(wd_usbdev *d);
     void (*destroy)(wd_usbdev *d);
     /* set by the host controller */
@@ -49,6 +52,8 @@ int wd_xhci_attach(struct wd_machine *m, wd_usbdev *d);
 wd_usbdev *wd_usb_keyboard_new(void);
 wd_usbdev *wd_usb_tablet_new(void);
 wd_usbdev *wd_usb_storage_new(const wd_disk *disk, int cdrom);
+wd_usbdev *wd_usb_net_new(const uint8_t mac[6]);
+void wd_usb_net_poll(wd_usbdev *d);
 
 /* input into the HID devices */
 void wd_usb_keyboard_event(wd_usbdev *d, int usage, int down);

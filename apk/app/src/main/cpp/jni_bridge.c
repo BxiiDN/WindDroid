@@ -178,6 +178,11 @@ JNIEXPORT jint JNICALL Java_com_bxiidn_winddroid_Engine_nativeAttachUsbInput(JNI
     return wd_attach_usb_keyboard(h->m) || wd_attach_usb_tablet(h->m) ? -1 : 0;
 }
 
+JNIEXPORT jint JNICALL Java_com_bxiidn_winddroid_Engine_nativeAttachUsbNet(JNIEnv *env, jclass cls, jlong p)
+{
+    return wd_attach_usb_net(H(p)->m, NULL);
+}
+
 JNIEXPORT void JNICALL Java_com_bxiidn_winddroid_Engine_nativeKey(JNIEnv *env, jclass cls, jlong p, jint usage, jboolean down)
 {
     wd_key_event(H(p)->m, usage, down ? 1 : 0);

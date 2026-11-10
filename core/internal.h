@@ -257,6 +257,8 @@ struct wd_machine {
     int64_t jit_left;        /* instructions translated code may still run */
     uint32_t *jit_exit_site; /* chainable exit taken by the last block */
     uint8_t *code_page;      /* per RAM page: holds translated code (writes are tracked) */
+    void *usbnet;            /* USB network adapter (wd_usbdev), polled from the run loop */
+    uint64_t net_next;       /* icount of the next network poll */
     uint64_t idle_ns;
     int wfi;
 
@@ -492,6 +494,8 @@ static inline void wd_write(wd_machine *m, uint64_t va, int size, uint64_t val, 
     }
     wd_write_slow(m, va, size, val, unpriv);
 }
+
+void wd_net_poll(wd_machine *m);
 
 #endif
 

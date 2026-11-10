@@ -11,7 +11,7 @@ Pendekatannya sama dengan [Henge](https://github.com/Leviidev/Henge) (macOS di i
 | Folder | Isi |
 |---|---|
 | `core/` | Interpreter CPU A64 (integer, FP, AdvSIMD), **JIT AArch64→AArch64**, MMU stage 1 + TLB, register sistem |
-| `devices/` | GICv3 + ITS, PL011, PL031, flash CFI, fw_cfg, PCIe (ECAM, MSI-X), ramfb, NVMe, xHCI + HID + mass storage, image disk |
+| `devices/` | GICv3 + ITS, PL011, PL031, flash CFI, fw_cfg, PCIe (ECAM, MSI-X), ramfb, NVMe, xHCI + HID + mass storage + **jaringan USB NCM**, NAT mode pengguna, image disk |
 | `host/` | Bus fisik, device tree, tabel ACPI, PSCI (termasuk CPU_ON/CPU_OFF), timer, penjadwal multi-CPU, run loop, CLI `winddroid-vm` |
 | `include/` | API publik engine (`winddroid.h`) |
 | `firmware/` | EDK2 ArmVirtQemu `QEMU_EFI.fd`, `QEMU_VARS.fd`, UEFI Shell (BSD-2-Clause-Patent) |
@@ -38,6 +38,7 @@ Pendekatannya sama dengan [Henge](https://github.com/Leviidev/Henge) (macOS di i
 - **UEFI**: EDK2 `QEMU_EFI.fd` resmi, device tree, fw_cfg dengan `etc/table-loader` (ACPI: DSDT, FADT, MADT dengan ITS, **IORT**, GTDT, MCFG, SPCR, DBG2), `ramfb` → GOP
 - **NVMe 1.4** di PCIe (driver bawaan Windows `stornvme`), antrean admin/I-O, PRP, MSI-X per antrean
 - **xHCI** (driver bawaan Windows `usbxhci`): keyboard HID, tablet absolut, USB disk, **USB DVD-ROM** (SCSI MMC) untuk ISO
+- **Jaringan**: adaptor USB **CDC NCM** (driver bawaan Windows 11 `UsbNcm`) di atas NAT mode pengguna di dalam aplikasi, tanpa root dan tanpa VPN: DHCP (tamu mendapat `10.0.2.15`), DNS `10.0.2.3` dijawab resolver Android/host, TCP dan UDP lewat socket biasa aplikasi, ping. `10.0.2.2` adalah host itu sendiri (`127.0.0.1`), seperti jaringan *user* QEMU. Hanya IPv4.
 - **Image disk** tanpa memuat ke RAM: raw/IMG, ISO, **VHDX** (dinamis/tetap, sektor 512/4096, replay log, alokasi blok, membuat baru), VHD (tetap/dinamis). Image diferensial (punya parent) ditolak dengan pesan yang jelas.
 
 ## Hasil pengujian
@@ -49,6 +50,7 @@ Pendekatannya sama dengan [Henge](https://github.com/Leviidev/Henge) (macOS di i
 | CPU | 4.000 instruksi ALU acak + 4.117 cek load/store vs model Python; **108.000+ vektor FP/SIMD** bit-exact vs referensi `fractions.Fraction`; program C dengan vektor uji SHA-256 resmi |
 | Sistem | exception, MMU, EL0, GICv3 + timer + UART IRQ |
 | `t_msi` | ITS + LPI + MSI-X dari sisi OS: NVMe (identify, baca/tulis, masking vektor), xHCI (address device, 70 transfer kontrol yang memutar ring) |
+| `t_net` | driver xHCI + NCM di sisi tamu: deskriptor, permintaan kelas NCM, notifikasi, NTB berisi beberapa datagram; DHCP, ARP, ping, DNS, UDP echo, TCP 300 KB bolak-balik dengan jendela 8 KB dan satu segmen sengaja dibuang (NAT harus mengirim ulang), koneksi ditolak (RST), pembaca lambat yang membuat jendela NAT tertutup lalu terbuka lagi |
 | `t_smp` | 4 CPU: PSCI CPU_ON/AFFINITY_INFO/CPU_OFF, SPI yang dirutekan ke CPU 3, spinlock LDAXR/STXR + LDADD dari semua CPU (12.000 penambahan tanpa hilang), STXR harus gagal setelah CPU lain menulis, timer per CPU, SGI berdaftar target, redistributor CPU lain dibaca/ditulis dari CPU 0 |
 | Firmware | EDK2 boot ke menu boot (juga dengan 4 CPU), Setup, NVRAM tersimpan, layar GOP, keyboard USB di menu boot, ACPI divalidasi ACPICA `acpiexec`, device tree dicek untuk 1/2/4/8 CPU |
 | Disk | UEFI Shell boot dari NVMe (raw dan VHDX), salin file 3 MB, tulis file, mode read-only; boot ISO bergaya Windows dari USB DVD; baca/tulis USB disk |
@@ -56,7 +58,7 @@ Pendekatannya sama dengan [Henge](https://github.com/Leviidev/Henge) (macOS di i
 
 **JIT** (`core/jit.c`, aktif otomatis di host ARM64): semua tes di atas juga dijalankan dengan JIT di runner ARM64 asli, termasuk boot EDK2, UEFI Shell dari NVMe/USB, dan kode yang memodifikasi dirinya sendiri; `tests/jit_diff.py` membandingkan checksum state per instruksi antara interpreter dan JIT.
 
-**Uji mutasi** (`tests/mutation_test.py`): **72 bug** disuntikkan satu per satu (CPU, jalur cepat, FP, SIMD, VHDX, VHD, USB, NVMe, xHCI, ITS, MSI-X, SMP, dan JIT di ARM64). Semuanya harus tertangkap sebelum rilis.
+**Uji mutasi** (`tests/mutation_test.py`): **84 bug** disuntikkan satu per satu (CPU, jalur cepat, FP, SIMD, VHDX, VHD, USB, NVMe, xHCI, ITS, MSI-X, SMP, NAT, NCM, dan JIT di ARM64). Semuanya harus tertangkap sebelum rilis.
 
 ## Membangun
 
@@ -65,7 +67,7 @@ make test                                   # engine + semua tes (clang, lld, py
 
 # UEFI Shell dari disk NVMe, keyboard USB, ISO di USB DVD:
 build/winddroid-vm -r -m 4096 -P 2 -b firmware/QEMU_EFI.fd -v vars.fd \
-    -D windows.vhdx -c Win11_Arm64.iso -U -I
+    -D windows.vhdx -c Win11_Arm64.iso -U -N -I
 
 build/disktool create disk.vhdx 64G         # buat VHDX dinamis kosong
 build/disktool info  image.vhdx
@@ -79,7 +81,7 @@ cd apk && ./gradlew assembleRelease         # APK (Android SDK + NDK)
 - **Disk sistem…** — VHDX/VHD/IMG sebagai SSD NVMe (misalnya VHDX Windows 11 ARM64 Insider dari Microsoft)
 - **ISO installer…** — ISO Windows 11 ARM64 sebagai USB DVD
 - **Buat disk baru…** — VHDX dinamis 32–256 GB untuk tujuan instalasi
-- RAM VM 1–8 GB, **CPU 1/2/4 inti** (bawaan 2), NVRAM UEFI tersimpan, **Reset NVRAM**
+- RAM VM 1–8 GB, **CPU 1/2/4 inti** (bawaan 2), **Jaringan aktif/mati** (adaptor USB NCM + NAT), NVRAM UEFI tersimpan, **Reset NVRAM**
 - **▶ Jalankan Monitor** / **Muat image…** untuk program AArch64 bare-metal
 
 File dibuka lewat pemilih file Android (deskriptor file), jadi image puluhan GB tidak dimuat ke RAM. Simpan image di penyimpanan internal; penyedia cloud yang tidak mendukung akses acak tidak bisa dipakai.
@@ -89,10 +91,10 @@ File dibuka lewat pemilih file Android (deskriptor file), jadi image puluhan GB 
 1. ~~FP/AdvSIMD~~, ~~UEFI + fw_cfg + ACPI~~, ~~NVMe~~, ~~ramfb~~, ~~xHCI + keyboard/tablet/storage~~, ~~ITS + MSI-X~~
 2. ~~JIT arm64→arm64~~ (instruksi integer, load/store dengan TLB inline, cabang, rantai blok). Berikutnya: FP/SIMD di JIT
 3. ~~Multi-core (SMP)~~ (satu thread host). Berikutnya: satu thread host per CPU agar inti tablet benar-benar terpakai
-4. **Jaringan** (USB NCM, driver bawaan Windows) dengan NAT di dalam aplikasi
+4. ~~Jaringan~~ (USB NCM, driver bawaan Windows, NAT di dalam aplikasi). Berikutnya: IPv6, *port forwarding* dari tablet ke tamu (mis. Remote Desktop)
 5. GPU yang lebih cepat dari ramfb, EL2
 
-Referensi: `hw/arm/virt.c` QEMU, GICv3/ITS (ARM IHI 0069), ARM ARM (DDI 0487), NVMe 1.4, xHCI 1.1, USB Mass Storage BOT, SCSI SBC/MMC, [MS-VHDX], spesifikasi VHD, IORT (ARM DEN 0049), ACPI 6.
+Referensi: `hw/arm/virt.c` QEMU, GICv3/ITS (ARM IHI 0069), ARM ARM (DDI 0487), NVMe 1.4, xHCI 1.1, USB Mass Storage BOT, SCSI SBC/MMC, [MS-VHDX], spesifikasi VHD, IORT (ARM DEN 0049), ACPI 6, USB CDC NCM 1.0, RFC 793/1122 (TCP), RFC 2131 (DHCP), RFC 1035 (DNS).
 
 ## Lisensi
 

@@ -245,6 +245,11 @@ public final class Engine {
         if (nativeAttachUsbInput(h) != 0) throw new IllegalStateException("USB: " + nativeError(h));
     }
 
+    /** USB network adapter (CDC NCM) behind the app's NAT: 10.0.2.15 in the guest. */
+    static void attachUsbNet(long h) {
+        if (nativeAttachUsbNet(h) != 0) throw new IllegalStateException("USB network: " + nativeError(h));
+    }
+
     public static int imageFormat(int fd) {
         return nativeImageFormat(fd);
     }
@@ -292,6 +297,8 @@ public final class Engine {
     private static native int nativeCreateVhdx(int fd, long size);
 
     private static native int nativeAttachUsbInput(long h);
+
+    private static native int nativeAttachUsbNet(long h);
 
     private static native void nativeKey(long h, int usage, boolean down);
 

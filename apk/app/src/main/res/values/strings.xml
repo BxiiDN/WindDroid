@@ -23,6 +23,8 @@
     <string name="btn_newdisk">Buat disk baru…</string>
     <string name="btn_vm_ram">RAM VM: %1$d MB</string>
     <string name="btn_vm_cpu">CPU: %1$d inti</string>
+    <string name="btn_vm_net_on">Jaringan: aktif</string>
+    <string name="btn_vm_net_off">Jaringan: mati</string>
     <string name="btn_reset_vars">Reset NVRAM</string>
     <string name="btn_console">Konsol</string>
     <string name="vm_section">Mesin virtual UEFI (Windows ARM64)</string>

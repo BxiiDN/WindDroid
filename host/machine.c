@@ -2,6 +2,9 @@
  * WindDroid - machine: physical bus, loader, PSCI, timers and run loop.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
+#define NET_POLL_INSNS 200000ULL
+#define NET_IDLE_NS    2000000ULL
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -413,6 +416,7 @@ wd_run_result wd_run(wd_machine *m, uint64_t max_insns)
     m->budget = max_insns;
     m->idle_ns = 0;
     m->irq_dirty = 1;
+    if (m->usbnet) { wd_net_poll(m); m->net_next = c->icount + NET_POLL_INSNS; }
 
     if (setjmp(m->jb)) {
         if (m->stop >= 0) goto done;
@@ -428,6 +432,10 @@ wd_run_result wd_run(wd_machine *m, uint64_t max_insns)
             } else {
                 schedule(m);
             }
+        }
+        if (m->usbnet && c->icount >= m->net_next) {
+            m->net_next = c->icount + NET_POLL_INSNS;
+            wd_net_poll(m);
         }
         if (m->irq_dirty || (c->icount & 255) == 0) {
             m->irq_dirty = 0;
@@ -450,6 +458,7 @@ wd_run_result wd_run(wd_machine *m, uint64_t max_insns)
                     uint64_t now = wd_counter(m);
                     m->idle_ns = (d - now) * 16;
                 }
+                if (m->usbnet && m->idle_ns > NET_IDLE_NS) m->idle_ns = NET_IDLE_NS;   /* look at the sockets again soon */
                 m->stop = WD_RUN_IDLE;
                 goto done;
             }
