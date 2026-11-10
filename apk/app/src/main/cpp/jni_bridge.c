@@ -32,11 +32,11 @@ static void on_tx(void *opaque, uint8_t ch)
 static handle *H(jlong p) { return (handle *)(intptr_t)p; }
 
 JNIEXPORT jlong JNICALL Java_com_bxiidn_winddroid_Engine_nativeCreate(JNIEnv *env, jclass cls, jlong ram_mb,
-                                                                       jboolean realtime)
+                                                                       jint cpus, jboolean realtime)
 {
     handle *h = calloc(1, sizeof *h);
     if (!h) return 0;
-    wd_config cfg = { .ram_size = (uint64_t)ram_mb << 20, .realtime = realtime ? 1 : 0 };
+    wd_config cfg = { .ram_size = (uint64_t)ram_mb << 20, .realtime = realtime ? 1 : 0, .ncpu = cpus };
     h->m = wd_create(&cfg);
     if (!h->m) { free(h); return 0; }
     wd_set_uart_tx(h->m, on_tx, h);

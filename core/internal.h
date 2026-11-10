@@ -90,6 +90,22 @@ typedef struct {
     int lpi_npend;
 } wd_gic;
 
+/* per-CPU part of the GIC (SGIs/PPIs, CPU interface, redistributor), banked on CPU switches */
+typedef struct {
+    uint8_t enabled[32], latch[32], line[32], active[32], edge[32], group[32], prio[32];
+    uint8_t pmr, bpr0, bpr1, igrpen0, igrpen1;
+    uint32_t ctlr;
+    uint8_t ap_prio[32];
+    uint16_t ap_id[32];
+    int ap_n;
+    uint32_t rwaker, rctlr;
+    uint64_t propbaser, pendbaser;
+    uint8_t lpi_pend[GIC_NLPI];
+    int lpi_npend;
+} wd_gic_cpu;
+
+#define WD_MAX_CPUS 8
+
 /* ---------------------------------------------------------------- ITS */
 
 typedef struct { uint32_t devid, eventid, pintid; uint16_t icid; } wd_its_map;
@@ -103,6 +119,7 @@ typedef struct {
     wd_its_map *map;
     int nmap, cap;
     uint8_t coll_valid[256];
+    uint8_t coll_target[256];    /* processor number of each collection */
 } wd_its;
 
 /* ---------------------------------------------------------------- UART */
@@ -203,6 +220,13 @@ struct wd_machine {
     wd_cpu cpu;
     wd_gic gic;
     wd_its its;
+    /* SMP: m->cpu and the banked GIC state belong to CPU 'cur'; the others wait here */
+    int ncpu, cur;
+    wd_cpu cpus[WD_MAX_CPUS];
+    wd_gic_cpu gicp[WD_MAX_CPUS];
+    uint8_t cpu_on[WD_MAX_CPUS], cpu_wfi[WD_MAX_CPUS];
+    uint64_t slice_end;
+    int yield;
     wd_uart uart;
 
     uint8_t *ram;
@@ -364,6 +388,11 @@ uint64_t wd_gic_hppir(wd_machine *m);
 uint64_t wd_gic_rpr(wd_machine *m);
 void wd_gic_sgi(wd_machine *m, uint64_t val);
 void wd_gic_set_lpi(wd_machine *m, uint32_t intid);
+void wd_gic_set_lpi_cpu(wd_machine *m, int cpu, uint32_t intid);
+void wd_gic_bank_save(wd_machine *m, int cpu);
+void wd_gic_bank_load(wd_machine *m, int cpu);
+void wd_gic_cpu_reset(wd_gic_cpu *g);
+void wd_start_cpu(wd_machine *m, int k, uint64_t entry, uint64_t context);
 /* its.c */
 uint64_t wd_its_read(wd_machine *m, uint64_t off, int size);
 void wd_its_write(wd_machine *m, uint64_t off, int size, uint64_t val);

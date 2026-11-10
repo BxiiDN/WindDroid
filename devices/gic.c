@@ -18,6 +18,54 @@ void wd_gic_reset(wd_gic *g)
     g->rwaker = 6;                           /* ProcessorSleep | ChildrenAsleep */
 }
 
+void wd_gic_cpu_reset(wd_gic_cpu *g)
+{
+    memset(g, 0, sizeof *g);
+    for (int i = 0; i < 16; i++) g->edge[i] = 1;
+    g->rwaker = 6;
+}
+
+/* copy the private part of the live GIC state to CPU 'cpu's bank */
+void wd_gic_bank_save(wd_machine *m, int cpu)
+{
+    wd_gic *from = &m->gic;
+    wd_gic_cpu *to = &m->gicp[cpu];
+    memcpy(to->enabled, from->enabled, 32); memcpy(to->latch, from->latch, 32);
+    memcpy(to->line, from->line, 32); memcpy(to->active, from->active, 32);
+    memcpy(to->edge, from->edge, 32); memcpy(to->group, from->group, 32); memcpy(to->prio, from->prio, 32);
+    to->pmr = from->pmr; to->bpr0 = from->bpr0; to->bpr1 = from->bpr1;
+    to->igrpen0 = from->igrpen0; to->igrpen1 = from->igrpen1; to->ctlr = from->ctlr;
+    memcpy(to->ap_prio, from->ap_prio, sizeof to->ap_prio); memcpy(to->ap_id, from->ap_id, sizeof to->ap_id);
+    to->ap_n = from->ap_n; to->rwaker = from->rwaker; to->rctlr = from->rctlr;
+    to->propbaser = from->propbaser; to->pendbaser = from->pendbaser;
+    memcpy(to->lpi_pend, from->lpi_pend, sizeof to->lpi_pend); to->lpi_npend = from->lpi_npend;
+}
+
+void wd_gic_bank_load(wd_machine *m, int cpu)
+{
+    wd_gic *to = &m->gic;
+    wd_gic_cpu *from = &m->gicp[cpu];
+    memcpy(to->enabled, from->enabled, 32); memcpy(to->latch, from->latch, 32);
+    memcpy(to->line, from->line, 32); memcpy(to->active, from->active, 32);
+    memcpy(to->edge, from->edge, 32); memcpy(to->group, from->group, 32); memcpy(to->prio, from->prio, 32);
+    to->pmr = from->pmr; to->bpr0 = from->bpr0; to->bpr1 = from->bpr1;
+    to->igrpen0 = from->igrpen0; to->igrpen1 = from->igrpen1; to->ctlr = from->ctlr;
+    memcpy(to->ap_prio, from->ap_prio, sizeof to->ap_prio); memcpy(to->ap_id, from->ap_id, sizeof to->ap_id);
+    to->ap_n = from->ap_n; to->rwaker = from->rwaker; to->rctlr = from->rctlr;
+    to->propbaser = from->propbaser; to->pendbaser = from->pendbaser;
+    memcpy(to->lpi_pend, from->lpi_pend, sizeof to->lpi_pend); to->lpi_npend = from->lpi_npend;
+    m->irq_dirty = 1;
+}
+
+/* SPI routed to this CPU? (GICD_IROUTER: IRM = any CPU, else Aff0) */
+static int routed_here(const wd_machine *m, int i)
+{
+    if (i < 32 || m->ncpu <= 1) return 1;
+    uint64_t r = m->gic.irouter[i];
+    if (r & (1ULL << 31)) return m->cur == 0;      /* 1-of-N: deliver on CPU 0 */
+    return (int)(r & 0xFF) == m->cur;
+}
+
 static int pending(const wd_gic *g, int i)
 {
     return g->latch[i] || (!g->edge[i] && g->line[i]);
@@ -53,6 +101,7 @@ static int hppi(wd_machine *m, int grp, int apply_masks)
     for (int i = 0; i < GIC_NIRQ; i++) {
         if (!g->enabled[i] || !pending(g, i) || g->active[i]) continue;
         if (grp >= 0 && g->group[i] != grp) continue;
+        if (!routed_here(m, i)) continue;
         if (!group_on(g, i)) continue;
         int p = g->prio[i] & PRIO_MASK;
         if (p < bp) { bp = p; best = i; }
@@ -85,10 +134,17 @@ int wd_gic_any_pending(wd_machine *m)
 
 void wd_gic_set_lpi(wd_machine *m, uint32_t intid)
 {
-    wd_gic *g = &m->gic;
+    wd_gic_set_lpi_cpu(m, m->cur, intid);
+}
+
+void wd_gic_set_lpi_cpu(wd_machine *m, int cpu, uint32_t intid)
+{
     if (intid < GIC_LPI_BASE || intid >= GIC_LPI_BASE + GIC_NLPI) return;
-    uint8_t *p = &g->lpi_pend[intid - GIC_LPI_BASE];
-    if (!*p) { *p = 1; g->lpi_npend++; }
+    uint8_t *p;
+    int *n;
+    if (cpu == m->cur || cpu < 0 || cpu >= m->ncpu) { p = &m->gic.lpi_pend[intid - GIC_LPI_BASE]; n = &m->gic.lpi_npend; }
+    else { p = &m->gicp[cpu].lpi_pend[intid - GIC_LPI_BASE]; n = &m->gicp[cpu].lpi_npend; }
+    if (!*p) { *p = 1; (*n)++; }
     m->irq_dirty = 1;
 }
 
@@ -171,9 +227,12 @@ void wd_gic_sgi(wd_machine *m, uint64_t v)
     int irm = (int)((v >> 40) & 1);
     int aff1 = (int)((v >> 16) & 0xFF), aff2 = (int)((v >> 32) & 0xFF), aff3 = (int)((v >> 48) & 0xFF);
     int targets = (int)(v & 0xFFFF);
-    /* IRM=1 means "all but self", so with one CPU nothing is delivered. */
-    if (!irm && aff1 == 0 && aff2 == 0 && aff3 == 0 && (targets & 1)) {
-        m->gic.latch[intid] = 1;
+    int ncpu = m->ncpu > 0 ? m->ncpu : 1;
+    for (int k = 0; k < ncpu; k++) {
+        int hit = irm ? k != m->cur : (aff1 == 0 && aff2 == 0 && aff3 == 0 && ((targets >> k) & 1));
+        if (!hit) continue;
+        if (k == m->cur) m->gic.latch[intid] = 1;
+        else m->gicp[k].latch[intid] = 1;
         m->irq_dirty = 1;
     }
 }
@@ -296,7 +355,8 @@ uint64_t wd_gicd_read(wd_machine *m, uint64_t off, int size)
     off &= ~3ULL;
     switch (off) {
     case 0x0000: return (g->dctlr & 3) | 0x10 | 0x40;
-    case 0x0004: return (13u << 19) | (1u << 17) | (GIC_NIRQ / 32 - 1);   /* IDbits 14, LPIS */
+    case 0x0004: return (13u << 19) | (1u << 17) | (uint32_t)((m->ncpu > 0 ? m->ncpu : 1) - 1) << 5 |
+                        (GIC_NIRQ / 32 - 1);   /* IDbits 14, LPIS, CPUNumber */
     case 0x0008: return 0x0000043B;
     case 0x000C: case 0x0010: return 0;
     case 0xFFE8: return 0x3B;
@@ -327,7 +387,40 @@ void wd_gicd_write(wd_machine *m, uint64_t off, int size, uint64_t val)
 
 /* ---------------------------------------------------------------- redistributor */
 
+static uint64_t gicr_read1(wd_machine *m, uint64_t off, int size, int frame);
+static void gicr_write1(wd_machine *m, uint64_t off, int size, uint64_t val, int frame);
+
+/* GICR frames of other CPUs: operate on their bank through the live state */
 uint64_t wd_gicr_read(wd_machine *m, uint64_t off, int size)
+{
+    int frame = (int)(off / 0x20000), ncpu = m->ncpu > 0 ? m->ncpu : 1;
+    if (frame >= ncpu) return 0;
+    off %= 0x20000;
+    if (frame == m->cur) return gicr_read1(m, off, size, frame);
+    int cur = m->cur;
+    wd_gic_bank_save(m, cur);
+    wd_gic_bank_load(m, frame);
+    uint64_t v = gicr_read1(m, off, size, frame);
+    wd_gic_bank_save(m, frame);
+    wd_gic_bank_load(m, cur);
+    return v;
+}
+
+void wd_gicr_write(wd_machine *m, uint64_t off, int size, uint64_t val)
+{
+    int frame = (int)(off / 0x20000), ncpu = m->ncpu > 0 ? m->ncpu : 1;
+    if (frame >= ncpu) return;
+    off %= 0x20000;
+    if (frame == m->cur) { gicr_write1(m, off, size, val, frame); return; }
+    int cur = m->cur;
+    wd_gic_bank_save(m, cur);
+    wd_gic_bank_load(m, frame);
+    gicr_write1(m, off, size, val, frame);
+    wd_gic_bank_save(m, frame);
+    wd_gic_bank_load(m, cur);
+}
+
+static uint64_t gicr_read1(wd_machine *m, uint64_t off, int size, int frame)
 {
     wd_gic *g = &m->gic;
     if (off >= 0x20000) return 0;
@@ -335,19 +428,21 @@ uint64_t wd_gicr_read(wd_machine *m, uint64_t off, int size)
         uint64_t o = off - 0x10000;
         uint32_t v;
         if (o >= 0x0400 && o < 0x0420) return prio_read(g, o, size, 0, 32);
-        if (size == 8) return wd_gicr_read(m, off, 4) | (wd_gicr_read(m, off + 4, 4) << 32);
+        if (size == 8) return gicr_read1(m, off, 4, frame) | (gicr_read1(m, off + 4, 4, frame) << 32);
         if (common_read(g, o & ~3ULL, 0, 32, &v)) return v;
         return 0;
     }
-    if (off == 0x0008) {                      /* GICR_TYPER: Last, processor 0, physical LPIs */
-        return 0x11;
+    if (off == 0x0008 || off == 0x000C) {     /* GICR_TYPER: affinity, processor number, Last, physical LPIs */
+        int ncpu = m->ncpu > 0 ? m->ncpu : 1;
+        uint64_t t = (uint64_t)frame << 32 | (uint64_t)frame << 8 | (frame == ncpu - 1 ? 0x10u : 0) | 1;
+        if (off == 0x000C) return t >> 32;
+        return size == 8 ? t : (uint32_t)t;
     }
-    if (off == 0x000C) return 0;
     if (off == 0x0070) return size == 8 ? g->propbaser : (uint32_t)g->propbaser;
     if (off == 0x0074) return g->propbaser >> 32;
     if (off == 0x0078) return size == 8 ? g->pendbaser : (uint32_t)g->pendbaser;
     if (off == 0x007C) return g->pendbaser >> 32;
-    if (size == 8) return wd_gicr_read(m, off, 4) | (wd_gicr_read(m, off + 4, 4) << 32);
+    if (size == 8) return gicr_read1(m, off, 4, frame) | (gicr_read1(m, off + 4, 4, frame) << 32);
     switch (off & ~3ULL) {
     case 0x0000: return g->rctlr & 1;          /* GICR_CTLR: EnableLPIs, RWP = 0 */
     case 0x0004: return 0x0000043B;           /* GICR_IIDR */
@@ -357,14 +452,14 @@ uint64_t wd_gicr_read(wd_machine *m, uint64_t off, int size)
     }
 }
 
-void wd_gicr_write(wd_machine *m, uint64_t off, int size, uint64_t val)
+static void gicr_write1(wd_machine *m, uint64_t off, int size, uint64_t val, int frame)
 {
     wd_gic *g = &m->gic;
     if (off >= 0x20000) return;
     if (off >= 0x10000) {
         uint64_t o = off - 0x10000;
         if (o >= 0x0400 && o < 0x0420) { prio_write(m, o, size, val, 0, 32); return; }
-        if (size == 8) { wd_gicr_write(m, off, 4, (uint32_t)val); wd_gicr_write(m, off + 4, 4, val >> 32); return; }
+        if (size == 8) { gicr_write1(m, off, 4, (uint32_t)val, frame); gicr_write1(m, off + 4, 4, val >> 32, frame); return; }
         common_write(m, o & ~3ULL, 0, 32, (uint32_t)val);
         return;
     }

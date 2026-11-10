@@ -66,7 +66,7 @@ static void deliver(wd_machine *m, uint32_t devid, uint32_t eventid)
     if (!(s->ctlr & 1) || !event_ok(s, devid, eventid)) return;
     wd_its_map *e = find_map(s, devid, eventid);
     if (!e || e->icid >= 256 || !s->coll_valid[e->icid]) return;
-    wd_gic_set_lpi(m, e->pintid);
+    wd_gic_set_lpi_cpu(m, s->coll_target[e->icid], e->pintid);
 }
 
 static void run_command(wd_machine *m, const uint64_t *c)
@@ -93,8 +93,11 @@ static void run_command(wd_machine *m, const uint64_t *c)
         s->dev[d].size = (uint8_t)(c[1] & 0x1F);
         break;
     }
-    case 0x09:                                     /* MAPC */
-        if (icid < 256) s->coll_valid[icid] = (uint8_t)(c[2] >> 63);
+    case 0x09:                                     /* MAPC: RDbase is the processor number (PTA = 0) */
+        if (icid < 256) {
+            s->coll_valid[icid] = (uint8_t)(c[2] >> 63);
+            s->coll_target[icid] = (uint8_t)((c[2] >> 16) & 0xFF);
+        }
         break;
     case 0x0A: {                                   /* MAPTI */
         uint32_t pintid = (uint32_t)(c[1] >> 32);
@@ -125,7 +128,7 @@ static void run_command(wd_machine *m, const uint64_t *c)
     case 0x03:                                     /* INT */
         if (find_map(s, devid, eventid)) {
             wd_its_map *e = find_map(s, devid, eventid);
-            if (e->icid < 256 && s->coll_valid[e->icid]) wd_gic_set_lpi(m, e->pintid);
+            if (e->icid < 256 && s->coll_valid[e->icid]) wd_gic_set_lpi_cpu(m, s->coll_target[e->icid], e->pintid);
         }
         break;
     case 0x04: {                                   /* CLEAR */

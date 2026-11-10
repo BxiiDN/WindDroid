@@ -71,7 +71,7 @@ bool wd_sysreg_read(wd_machine *m, uint32_t key, uint64_t *val)
 
     switch (key) {
     case SR(3, 0, 0, 0, 0): *val = V_MIDR; return true;
-    case SR(3, 0, 0, 0, 5): *val = V_MPIDR; return true;
+    case SR(3, 0, 0, 0, 5): *val = V_MPIDR | (uint64_t)m->cur; return true;   /* Aff0 = CPU index */
     case SR(3, 0, 0, 0, 6): *val = 0; return true;      /* REVIDR */
     case SR(3, 0, 0, 4, 0): *val = V_PFR0; return true;
     case SR(3, 0, 0, 5, 0): *val = V_DFR0; return true;

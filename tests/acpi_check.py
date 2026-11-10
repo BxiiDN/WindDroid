@@ -39,11 +39,14 @@ def run_loader(files, script):
     return blobs, base
 
 
+NCPU = 4                      # the tables are dumped for a 4-CPU machine
+
+
 def main():
     vm, fw, acpiexec = sys.argv[1:4]
     errors = []
     with tempfile.TemporaryDirectory() as d:
-        subprocess.run([vm, "-q", "-m", "1024", "-b", fw, "-A", d], check=True)
+        subprocess.run([vm, "-q", "-m", "1024", "-P", str(NCPU), "-b", fw, "-A", d], check=True)
         files = {"etc/acpi/tables": open(os.path.join(d, "tables.bin"), "rb").read(),
                  "etc/acpi/rsdp": open(os.path.join(d, "rsdp.bin"), "rb").read()}
         script = open(os.path.join(d, "loader.bin"), "rb").read()
@@ -93,11 +96,20 @@ def main():
         if p != len(madt) or (0xB, 80) not in kinds or (0xC, 24) not in kinds or (0xE, 16) not in kinds \
                 or (0xF, 20) not in kinds:
             errors.append(f"MADT structures wrong: {kinds}")
+        gicc = []
         p = 44
         while p < len(madt):
+            if madt[p] == 0xB:
+                iface, uid, flags = struct.unpack_from("<III", madt, p + 4)
+                mpidr = struct.unpack_from("<Q", madt, p + 68)[0]
+                gicc.append((iface, uid, flags & 1, mpidr))
+            if madt[p] == 0xE and struct.unpack_from("<QI", madt, p + 4) != (0x080A0000, 0x20000 * NCPU):
+                errors.append("MADT GICR range does not cover one frame per CPU")
             if madt[p] == 0xF and struct.unpack_from("<IQ", madt, p + 4) != (0, 0x08080000):
                 errors.append("MADT GIC ITS entry wrong")
             p += madt[p + 1]
+        if gicc != [(k, k, 1, k) for k in range(NCPU)]:
+            errors.append(f"MADT GICC entries wrong: {gicc}")
         # IORT (ARM DEN 0049): ITS group + root complex mapping all requester IDs to the ITS
         iort = found.get("IORT", b"")
         if len(iort) >= 48:
@@ -139,7 +151,7 @@ def main():
             open(path, "wb").write(t)
             paths.append(path)
         cmds = ["resources \\_SB.PCI0", "resources \\_SB.COM0", "resources \\_SB.PCI0.RES0",
-                "evaluate \\_SB.PCI0._HID", "evaluate \\_SB.C000._HID", "evaluate \\_SB.COM0._HID",
+                "evaluate \\_SB.PCI0._HID", "evaluate \\_SB.C000._HID", "evaluate \\_SB.C003._UID", "evaluate \\_SB.COM0._HID",
                 "evaluate \\_SB.PCI0._CCA", "namespace"]
         dsdt_path = os.path.join(d, "dsdt.dat")
         out = ""

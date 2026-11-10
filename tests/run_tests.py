@@ -30,6 +30,8 @@ TESTS = [
     ("t_float", [], subprocess.run([sys.executable, os.path.join(ROOT, "tests", "float_ref.py")],
                                    capture_output=True, text=True).stdout.split("\n")[:3]),
     ("t_msi", ["-U", "-D", "{msidisk}"], ["msi: 0 failures"]),
+    ("t_smp", ["-P", "4"], ["smp: 4 CPUs, counter=12000 atomic=12000, 0 failures"]),
+    ("t_smp", ["-P", "4", "-X"], ["smp: 4 CPUs, counter=12000 atomic=12000, 0 failures"]),
     # the same programs through the general decoder only
     ("alu_gen", ["-X"], ["alu: 4000 checks, 0 failures"]),
     ("mem_gen", ["-X"], ["mem: 4117 checks, 0 failures"]),
@@ -54,6 +56,8 @@ FW_TESTS = [
     ("uefi_gop", ["-s", "Please select boot device", "-k", "Press any key=\\r", "-F", "{screen}"],
      ["Please select boot device"]),
     ("uefi_usb_kbd", ["-U", "-s", "Please select boot device", "-K", "Press any key=\\r"],
+     ["Press any key to enter the Boot Manager Menu", "Please select boot device"]),
+    ("uefi_smp4", ["-P", "4", "-U", "-s", "Please select boot device", "-K", "Press any key=\\r"],
      ["Press any key to enter the Boot Manager Menu", "Please select boot device"]),
 ]
 
@@ -337,6 +341,14 @@ def main():
         total += len(FW_TESTS)
         failed += run_disk_tests(args.vm, args.quiet, max(args.timeout, 300))
         total += DISK_TESTS
+        total += 1
+        p = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "dtb_check.py"), args.vm,
+                            os.path.join(FW, "QEMU_EFI.fd")], capture_output=True, text=True)
+        if not args.quiet or p.returncode:
+            print(f"{'PASS' if p.returncode == 0 else 'FAIL'}  device_tree")
+        if p.returncode:
+            failed.append("device_tree")
+            print("      " + "\n      ".join(p.stdout.strip().splitlines()[-15:]))
         acpiexec = os.environ.get("ACPIEXEC") or os.path.join(ROOT, "..", "ext", "acpica", "generate", "unix", "bin", "acpiexec")
         if os.path.exists(acpiexec):
             total += 1

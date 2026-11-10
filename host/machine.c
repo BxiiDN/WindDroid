@@ -34,6 +34,9 @@ wd_machine *wd_create(const wd_config *cfg)
     wd_uart_reset(&m->uart);
     wd_fwcfg_init(&m->fwcfg);
     wd_pci_host_init(m);
+    m->ncpu = cfg && cfg->ncpu > 1 ? (cfg->ncpu > WD_MAX_CPUS ? WD_MAX_CPUS : cfg->ncpu) : 1;
+    for (int k = 0; k < m->ncpu; k++) wd_gic_cpu_reset(&m->gicp[k]);
+    m->cpu_on[0] = 1;
     wd_cpu_reset(m);
     m->use_jit = wd_jit_available() && !getenv("WINDDROID_NO_JIT");
     return m;
@@ -129,7 +132,7 @@ uint64_t wd_phys_read(wd_machine *m, uint64_t pa, int size)
         return f->mem ? wd_flash_read(m, f, pa % WD_FLASH_SIZE, size) : 0;
     }
     if (in(pa, WD_GICD_BASE, 0x10000)) return wd_gicd_read(m, pa - WD_GICD_BASE, size);
-    if (in(pa, WD_GICR_BASE, 0x20000)) return wd_gicr_read(m, pa - WD_GICR_BASE, size);
+    if (in(pa, WD_GICR_BASE, 0x20000ULL * (uint64_t)m->ncpu)) return wd_gicr_read(m, pa - WD_GICR_BASE, size);
     if (in(pa, WD_GITS_BASE, 0x20000)) return wd_its_read(m, pa - WD_GITS_BASE, size);
     if (in(pa, WD_UART_BASE, 0x1000)) return wd_uart_read(m, (pa - WD_UART_BASE) & ~3ULL);
     if (in(pa, WD_RTC_BASE, 0x1000)) return wd_rtc_read(m, (pa - WD_RTC_BASE) & ~3ULL);
@@ -151,7 +154,7 @@ void wd_phys_write(wd_machine *m, uint64_t pa, int size, uint64_t val)
         return;
     }
     if (in(pa, WD_GICD_BASE, 0x10000)) { wd_gicd_write(m, pa - WD_GICD_BASE, size, val); return; }
-    if (in(pa, WD_GICR_BASE, 0x20000)) { wd_gicr_write(m, pa - WD_GICR_BASE, size, val); return; }
+    if (in(pa, WD_GICR_BASE, 0x20000ULL * (uint64_t)m->ncpu)) { wd_gicr_write(m, pa - WD_GICR_BASE, size, val); return; }
     if (in(pa, WD_GITS_BASE, 0x20000)) { wd_its_write(m, pa - WD_GITS_BASE, size, val); return; }
     if (in(pa, WD_UART_BASE, 0x1000)) { wd_uart_write(m, (pa - WD_UART_BASE) & ~3ULL, val); return; }
     if (in(pa, WD_RTC_BASE, 0x1000)) { wd_rtc_write(m, (pa - WD_RTC_BASE) & ~3ULL, val); return; }
@@ -254,13 +257,80 @@ void wd_update_timers(wd_machine *m)
 }
 
 /* Earliest future deadline of an armed timer, or UINT64_MAX. */
+static uint64_t next_deadline1(const wd_machine *m, const wd_cpu *c);
+
+/* earliest timer deadline of all CPUs that are on */
 static uint64_t next_deadline(wd_machine *m)
 {
-    wd_cpu *c = &m->cpu;
-    uint64_t now = wd_counter(m), d = UINT64_MAX;
+    uint64_t d = next_deadline1(m, &m->cpu);
+    for (int k = 0; k < m->ncpu; k++) {
+        if (k == m->cur || !m->cpu_on[k]) continue;
+        uint64_t e = next_deadline1(m, &m->cpus[k]);
+        if (e < d) d = e;
+    }
+    return d;
+}
+
+static uint64_t next_deadline1(const wd_machine *m, const wd_cpu *c)
+{
+    uint64_t now = wd_counter((wd_machine *)m), d = UINT64_MAX;
     if ((c->cntv_ctl & 3) == 1 && c->cntv_cval > now && c->cntv_cval < d) d = c->cntv_cval;
     if ((c->cntp_ctl & 3) == 1 && c->cntp_cval > now && c->cntp_cval < d) d = c->cntp_cval;
     return d;
+}
+
+/* ---------------------------------------------------------------- SMP */
+
+#define SLICE 20000                                     /* instructions per CPU turn */
+
+/* make CPU k the running one */
+static void switch_to(wd_machine *m, int k)
+{
+    if (k == m->cur) return;
+    uint64_t now = m->cpu.icount;                       /* one counter for the whole machine */
+    m->cpu.excl_valid = 0;                              /* another CPU may write the location */
+    m->cpus[m->cur] = m->cpu;
+    m->cpu_wfi[m->cur] = (uint8_t)m->wfi;
+    wd_gic_bank_save(m, m->cur);
+    m->cur = k;
+    m->cpu = m->cpus[k];
+    m->cpu.icount = now;
+    m->wfi = m->cpu_wfi[k];
+    wd_gic_bank_load(m, k);
+    wd_tlb_flush(m);
+    m->irq_dirty = 1;
+}
+
+void wd_start_cpu(wd_machine *m, int k, uint64_t entry, uint64_t context)
+{
+    wd_cpu saved = m->cpu;
+    wd_cpu_reset(m);                                    /* fresh state in m->cpu, then park it */
+    m->cpu.pc = entry;
+    m->cpu.x[0] = context;
+    m->cpus[k] = m->cpu;
+    m->cpu = saved;
+    wd_tlb_flush(m);
+    wd_gic_cpu_reset(&m->gicp[k]);
+    m->cpu_on[k] = 1;
+    m->cpu_wfi[k] = 0;
+}
+
+/* Pick the next CPU that can run (round robin); stays on an idle CPU if none can. */
+static void schedule(wd_machine *m)
+{
+    m->yield = 0;
+    m->slice_end = m->cpu.icount + SLICE;
+    int start = m->cur;
+    for (int step = 1; step <= m->ncpu; step++) {
+        int k = (start + step) % m->ncpu;
+        if (!m->cpu_on[k]) continue;
+        switch_to(m, k);
+        wd_update_timers(m);
+        if (!m->wfi || wd_gic_any_pending(m)) return;
+    }
+    /* nobody can run: keep the CPU that is on (and idle) for the deadline computation */
+    if (!m->cpu_on[m->cur])
+        for (int k = 0; k < m->ncpu; k++) if (m->cpu_on[k]) { switch_to(m, k); break; }
 }
 
 /* ---------------------------------------------------------------- PSCI */
@@ -282,16 +352,32 @@ int wd_psci(wd_machine *m)
         m->wfi = 1;
         ret = PSCI_SUCCESS;
         break;
-    case 0x84000002:                                    /* CPU_OFF */
-        m->stop = WD_RUN_SHUTDOWN;
+    case 0x84000002: {                                  /* CPU_OFF */
+        m->cpu_on[m->cur] = 0;
+        int any = 0;
+        for (int k = 0; k < m->ncpu; k++) any |= m->cpu_on[k];
+        if (!any) m->stop = WD_RUN_SHUTDOWN;
+        m->yield = 1;
+        m->irq_dirty = 1;
+        ret = PSCI_SUCCESS;                             /* (not returned: the CPU is off) */
+        break;
+    }
+    case 0x84000003: case 0xC4000003: {                 /* CPU_ON */
+        uint64_t mpidr = c->x[1] & 0xFF00FFFFFFULL;
+        int k = (int)(mpidr & 0xFF);
+        if ((mpidr & ~0xFFULL) || k >= m->ncpu) { ret = PSCI_INVALID_PARAMS; break; }
+        if (m->cpu_on[k]) { ret = PSCI_ALREADY_ON; break; }
+        wd_start_cpu(m, k, fn == 0x84000003 ? (uint32_t)c->x[2] : c->x[2], fn == 0x84000003 ? (uint32_t)c->x[3] : c->x[3]);
         ret = PSCI_SUCCESS;
         break;
-    case 0x84000003: case 0xC4000003:                   /* CPU_ON */
-        ret = (c->x[1] & 0xFF00FFFFFFULL) == 0 ? PSCI_ALREADY_ON : PSCI_INVALID_PARAMS;
+    }
+    case 0x84000004: case 0xC4000004: {                 /* AFFINITY_INFO */
+        uint64_t mpidr = c->x[1] & 0xFF00FFFFFFULL;
+        int k = (int)(mpidr & 0xFF);
+        if ((mpidr & ~0xFFULL) || k >= m->ncpu) { ret = PSCI_INVALID_PARAMS; break; }
+        ret = m->cpu_on[k] ? 0 : 1;                     /* ON / OFF */
         break;
-    case 0x84000004: case 0xC4000004:                   /* AFFINITY_INFO */
-        ret = (c->x[1] & 0xFF00FFFFFFULL) == 0 ? 0 : PSCI_INVALID_PARAMS;
-        break;
+    }
     case 0x84000006: ret = 2; break;                    /* MIGRATE_INFO_TYPE: not needed */
     case 0x84000008:                                    /* SYSTEM_OFF */
         m->stop = WD_RUN_SHUTDOWN;
@@ -334,13 +420,22 @@ wd_run_result wd_run(wd_machine *m, uint64_t max_insns)
     }
 
     while (m->budget) {
+        /* SMP: another CPU's turn at the end of a slice, on WFI/WFE, or when this one is off */
+        if (m->ncpu > 1 && (m->yield || m->wfi || !m->cpu_on[m->cur] || c->icount >= m->slice_end)) {
+            if (m->wfi && !m->yield && m->cpu_on[m->cur] && c->icount < m->slice_end) {
+                wd_update_timers(m);
+                if (!wd_gic_any_pending(m)) schedule(m);
+            } else {
+                schedule(m);
+            }
+        }
         if (m->irq_dirty || (c->icount & 255) == 0) {
             m->irq_dirty = 0;
             wd_update_timers(m);
             m->irq_pend = wd_gic_irq_pending(m);
         }
-        if (m->wfi) {
-            if (wd_gic_any_pending(m)) {
+        if (m->wfi || !m->cpu_on[m->cur]) {
+            if (m->cpu_on[m->cur] && wd_gic_any_pending(m)) {
                 m->wfi = 0;
             } else {
                 uint64_t d = next_deadline(m);

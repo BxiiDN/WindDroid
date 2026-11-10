@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define WD_VERSION "0.2.0"
+#define WD_VERSION "0.3.0"
 
 typedef struct wd_machine wd_machine;
 
@@ -61,6 +61,7 @@ typedef void (*wd_uart_tx_fn)(void *opaque, uint8_t ch);
 typedef struct {
     uint64_t ram_size;   /* bytes, multiple of 4 KiB */
     int realtime;        /* 1: counter follows host clock, 0: counter = instructions */
+    int ncpu;            /* virtual CPUs, 1..8 (0 means 1); they share one host thread */
 } wd_config;
 
 wd_machine *wd_create(const wd_config *cfg);
