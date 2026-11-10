@@ -258,6 +258,7 @@ struct wd_machine {
     uint32_t *jit_exit_site; /* chainable exit taken by the last block */
     uint8_t *code_page;      /* per RAM page: holds translated code (writes are tracked) */
     void *usbnet;            /* USB network adapter (wd_usbdev), polled from the run loop */
+    int undef_logged;        /* undefined instructions at EL1 reported on the console */
     uint64_t net_next;       /* icount of the next network poll */
     uint64_t idle_ns;
     int wfi;

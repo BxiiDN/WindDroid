@@ -88,8 +88,23 @@ void wd_take_irq(wd_machine *m)
     enter_exception(m, 0x080, m->cpu.pc);
 }
 
+/* An undefined instruction in the OS or firmware usually means something the
+ * emulator lacks: say so on the serial console (a few times), then raise it. */
+static void log_undef(wd_machine *m)
+{
+    wd_cpu *c = &m->cpu;
+    if (c->el == 0 || m->undef_logged >= 8 || !m->uart_tx) return;
+    m->undef_logged++;
+    uint32_t insn = wd_fetch(m, c->pc);
+    char line[128];
+    int n = snprintf(line, sizeof line, "\r\n[WindDroid] undefined instruction %08x at pc=%016llx EL%d\r\n",
+                     insn, (unsigned long long)c->pc, c->el);
+    for (int i = 0; i < n; i++) m->uart_tx(m->uart_opaque, (uint8_t)line[i]);
+}
+
 void wd_undef(wd_machine *m)
 {
+    log_undef(m);
     wd_exception(m, EC_UNKNOWN, 0, 0, 0, m->cpu.pc);
 }
 

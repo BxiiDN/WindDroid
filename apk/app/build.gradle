@@ -2,7 +2,7 @@ plugins {
     id "com.android.application"
 }
 
-def versionNameProp = project.findProperty("wdVersionName") ?: "0.3.0"
+def versionNameProp = project.findProperty("wdVersionName") ?: "0.3.1"
 def versionCodeProp = (project.findProperty("wdVersionCode") ?: "1").toInteger()
 
 android {

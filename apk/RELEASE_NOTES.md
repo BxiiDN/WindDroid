@@ -1,4 +1,9 @@
-## WindDroid v0.3.0 — multi-core, jaringan, JIT lebih cepat
+## WindDroid v0.3.1 — diagnosa boot Windows
+
+### Perbaikan di v0.3.1
+- Bila firmware atau Windows menjalankan instruksi yang belum dikenali emulator, **Konsol** sekarang menampilkan `[WindDroid] undefined instruction … at pc=…`. Ini membantu mencari penyebab bila boot Windows berhenti di logo TianoCore. Kirim screenshot Konsol bila itu terjadi.
+
+## v0.3.0 — multi-core, jaringan, JIT lebih cepat
 
 ### Baru
 - **Multi-core (SMP)**: mesin virtual bisa punya 1, 2, atau 4 CPU (tombol **CPU** di layar utama, bawaan 2 inti karena Windows 11 meminta minimal 2 inti). Tiap CPU punya MPIDR, timer, dan redistributor GICv3 sendiri; SGI antar-CPU, PSCI `CPU_ON`/`CPU_OFF`/`AFFINITY_INFO`; device tree dan tabel ACPI (MADT, DSDT) mengikuti jumlah CPU.

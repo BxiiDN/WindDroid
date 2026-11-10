@@ -17,7 +17,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTS = [
     ("alu_gen", [], ["alu: 4000 checks, 0 failures"]),
     ("mem_gen", [], ["0 failures"]),
-    ("t_sys", [], ["t_sys: 0 failures"]),
+    ("t_sys", [], ["t_sys: 0 failures", "[WindDroid] undefined instruction"]),
     ("t_mmu", [], ["t_mmu: 0 failures"]),
     ("t_el0", [], ["t_el0: 0 failures"]),
     ("t_irq", ["-i", "hey!"], ["ticks=8 sgis=2 uart=1 rx=\"hey!\" failures=0"]),
