@@ -559,7 +559,13 @@ static block *translate(wd_machine *m, jit_state *j, uint64_t pc, const uint8_t 
     int ended = 0;
     uint64_t p = pc;
     unsigned room = (unsigned)((0x1000 - (pc & 0xFFF)) / 4);
-    unsigned max = room < MAX_INSNS ? room : MAX_INSNS;
+    static int limit = -1;
+    if (limit < 0) {
+        const char *env = getenv("WD_JIT_MAX");
+        limit = env ? atoi(env) : MAX_INSNS;
+        if (limit < 1 || limit > MAX_INSNS) limit = MAX_INSNS;
+    }
+    unsigned max = room < (unsigned)limit ? room : (unsigned)limit;
     while (b->n < max) {
         uint32_t insn;
         memcpy(&insn, host + 4 * b->n, 4);

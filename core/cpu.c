@@ -1170,10 +1170,21 @@ void wd_cpu_step(wd_machine *m)
 
 /* Run up to n instructions; returns early when the run loop has something to do
  * (stop request, interrupt state change, WFI). Exceptions longjmp out as usual. */
+static void state_trace(wd_machine *m)
+{
+    const wd_cpu *c = &m->cpu;
+    uint64_t h = 1469598103934665603ULL;
+    for (int i = 0; i < 31; i++) h = (h ^ c->x[i]) * 1099511628211ULL;
+    h = (h ^ c->sp_el0) * 1099511628211ULL;
+    h = (h ^ c->sp_el1) * 1099511628211ULL;
+    h = (h ^ c->nzcv) * 1099511628211ULL;
+    fprintf(stderr, "%llu %llx %016llx\n", (unsigned long long)c->icount, (unsigned long long)c->pc, (unsigned long long)h);
+}
+
 void wd_cpu_run(wd_machine *m, uint64_t n)
 {
     wd_cpu *c = &m->cpu;
-    if (m->trace || m->no_fast) {
+    if (m->trace == 1 || m->no_fast) {
         while (n--) {
             wd_cpu_step(m);
             m->budget--;
@@ -1185,6 +1196,7 @@ void wd_cpu_run(wd_machine *m, uint64_t n)
         if (m->use_jit) {
             uint64_t k = wd_jit_run(m, n);
             n -= k;
+            if (k && m->trace == 2) state_trace(m);
             if (m->stop >= 0 || m->irq_dirty || m->wfi) return;
             if (!n) return;
         }
@@ -1195,6 +1207,7 @@ void wd_cpu_run(wd_machine *m, uint64_t n)
         c->icount++;
         if (!fast_exec(m, c, insn, pc)) step_general(m, insn, pc);
         m->budget--;
+        if (m->trace == 2) state_trace(m);
         if (__builtin_expect(m->stop >= 0 || m->irq_dirty || m->wfi, 0)) return;
     }
 }

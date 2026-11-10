@@ -22,6 +22,7 @@
  *     -U             attach a USB keyboard and a USB tablet
  *     -X             general instruction decoder only (no fast paths), for testing
  *     -J             translate blocks to host code (AArch64 hosts only)
+ *     -T             print a state checksum after every instruction / block (debugging)
  *     -K TEXT=INPUT  type INPUT on the USB keyboard once TEXT has appeared on the serial port
  *
  * Exit status: guest exit code (control device), 0 after PSCI SYSTEM_OFF,
@@ -125,7 +126,7 @@ int main(int argc, char **argv)
     int realtime = 0, trace = 0, quiet = 0, opt, interactive = 0;
     const char *input = NULL, *bios = NULL, *vars_path = NULL, *dtb_path = NULL, *fb_path = NULL, *acpi_dir = NULL;
 
-    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:IF:A:D:c:u:UK:XJ")) != -1) {
+    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:IF:A:D:c:u:UK:XJT")) != -1) {
         switch (opt) {
         case 'm': ram_mb = strtoull(optarg, NULL, 0); break;
         case 'n': limit = strtoull(optarg, NULL, 0); break;
@@ -146,6 +147,7 @@ int main(int argc, char **argv)
         case 'U': usb_hid = 1; break;
         case 'X': no_fast = 1; break;
         case 'J': use_jit = 1; break;
+        case 'T': trace = 2; break;
         case 'K': {
             char *eq = strchr(optarg, '=');
             if (eq && nkeys < MAX_KEYS) { *eq = 0; key_after[nkeys] = optarg; key_input[nkeys] = eq + 1; key_usb[nkeys++] = 1; }

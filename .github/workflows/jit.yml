@@ -15,6 +15,11 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
       - name: Build
         run: make -j4 all build/unit_tests && make -C guest -j4
+      - name: Divergence report (interpreter vs translator, one-instruction blocks)
+        if: always()
+        run: |
+          python3 tests/jit_diff.py build/winddroid-vm guest/build/t_irq.elf -i 'hey!' || true
+          python3 tests/jit_diff.py build/winddroid-vm guest/build/t_sys.elf || true
       - name: Guest tests with the translator
         run: python3 tests/run_tests.py --jit --no-firmware
       - name: Firmware, disk and USB tests with the translator
