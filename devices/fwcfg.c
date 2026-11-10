@@ -130,6 +130,7 @@ static void dma(wd_machine *m, wd_fwcfg *f, uint64_t addr)
                     if (!p) { status |= DMA_ERROR; break; }
                     *p = 0;
                 }
+                wd_code_write_check(m, target, n);
             }
             if (wr) status |= DMA_ERROR;
         } else {
@@ -140,6 +141,7 @@ static void dma(wd_machine *m, wd_fwcfg *f, uint64_t addr)
                     if (!p) { status |= DMA_ERROR; break; }
                     *p = it->data[f->off + i];
                 }
+                wd_code_write_check(m, target, n);
             }
             if (wr) {
                 if (!it->writable || n != length) status |= DMA_ERROR;

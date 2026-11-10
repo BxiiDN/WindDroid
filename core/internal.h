@@ -230,6 +230,9 @@ struct wd_machine {
     int no_fast;             /* use only the general decoder (tests) */
     int use_jit;             /* block translation on AArch64 hosts */
     void *jit;
+    int64_t jit_left;        /* instructions translated code may still run */
+    uint32_t *jit_exit_site; /* chainable exit taken by the last block */
+    uint8_t *code_page;      /* per RAM page: holds translated code (writes are tracked) */
     uint64_t idle_ns;
     int wfi;
 
@@ -257,6 +260,15 @@ void wd_state_trace(wd_machine *m);
 uint64_t wd_jit_run(wd_machine *m, uint64_t max);
 void wd_jit_free(wd_machine *m);
 int wd_jit_available(void);
+void wd_jit_page_written(wd_machine *m, uint64_t page);
+/* a write of [pa, pa + len) in RAM done outside the CPU's store path (DMA) */
+static inline void wd_code_write_check(wd_machine *m, uint64_t pa, size_t len)
+{
+    if (!m->code_page || pa < WD_RAM_BASE || pa - WD_RAM_BASE >= m->ram_size || !len) return;
+    uint64_t first = (pa - WD_RAM_BASE) >> 12, last = (pa - WD_RAM_BASE + len - 1) >> 12;
+    for (uint64_t p = first; p <= last && p < (m->ram_size >> 12); p++)
+        if (m->code_page[p]) wd_jit_page_written(m, p);
+}
 void wd_take_irq(wd_machine *m);
 void wd_undef(wd_machine *m);
 _Noreturn void wd_exception(wd_machine *m, uint32_t ec, uint32_t iss, uint64_t far,
