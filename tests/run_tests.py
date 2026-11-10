@@ -20,7 +20,7 @@ TESTS = [
     ("t_sys", [], ["t_sys: 0 failures"]),
     ("t_mmu", [], ["t_mmu: 0 failures"]),
     ("t_el0", [], ["t_el0: 0 failures"]),
-    ("t_irq", ["-i", "hey!"], ["ticks=5 sgis=2 uart=1 rx=\"hey!\" failures=0"]),
+    ("t_irq", ["-i", "hey!"], ["ticks=8 sgis=2 uart=1 rx=\"hey!\" failures=0"]),
     ("t_cprog_O0", [], ["t_cprog: 0 failures"]),
     ("t_cprog_O2", [], ["t_cprog: 0 failures"]),
     ("t_cprog_Os", [], ["t_cprog: 0 failures"]),

@@ -26,6 +26,8 @@ jobs:
         run: python3 tests/run_tests.py --jit --no-firmware
       - name: Firmware, disk and USB tests with the translator
         run: python3 tests/run_tests.py --jit --timeout 600
+      - name: Translator mutants
+        run: MUTATION_JIT=1 python3 tests/mutation_test.py
       - name: Speed
         if: always()
         run: |
