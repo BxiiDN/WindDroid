@@ -1,105 +1,94 @@
 # WindDroid
 
-Mesin virtual **AArch64** yang ditulis dari nol untuk Android, dengan tujuan jangka panjang menjalankan **Windows on ARM** di tablet Android (target utama: Xiaomi Pad 6, Snapdragon 870).
+Mesin virtual **AArch64** yang ditulis dari nol untuk Android, dengan tujuan menjalankan **Windows on ARM** di tablet Android (target utama: Xiaomi Pad 6, Snapdragon 870).
 
-Pendekatannya sama dengan [Henge](https://github.com/Leviidev/Henge) (macOS di iPhone/iPad): aplikasi Android tidak boleh memakai hypervisor (EL2 sudah dipakai firmware Qualcomm), jadi WindDroid membawa CPU, MMU, dan perangkatnya sendiri. Peta memori dan perangkatnya mengikuti mesin `virt` milik QEMU, yang sudah terbukti bisa mem-boot Windows ARM lewat UEFI.
+Pendekatannya sama dengan [Henge](https://github.com/Leviidev/Henge) (macOS di iPhone/iPad): aplikasi Android tidak boleh memakai hypervisor (EL2 sudah dipakai firmware Qualcomm), jadi WindDroid membawa CPU, MMU, dan perangkatnya sendiri. Peta memori dan perangkatnya mengikuti mesin `virt` milik QEMU, konfigurasi yang dipakai orang untuk menjalankan Windows 11 ARM64 di QEMU (UEFI EDK2, `ramfb`, xHCI dengan keyboard/tablet USB, ISO lewat USB, NVMe).
 
-> **Status jujur (v0.1.1):** engine CPU/MMU/interupsi sudah berjalan dan teruji ketat, dan APK-nya bisa menjalankan program AArch64 bare-metal. **Windows belum bisa di-boot.** Bagian yang masih kurang tercantum di [Peta jalan](#peta-jalan-menuju-windows).
+> **Status jujur (v0.2.0):** firmware UEFI asli (EDK2) sudah boot penuh di dalam WindDroid: menu boot, Setup, UEFI Shell, membaca/menulis disk NVMe dan USB, boot dari ISO lewat USB DVD, layar GOP, keyboard USB. Tabel ACPI, ITS/MSI-X, dan perangkat yang dibutuhkan Windows sudah ada dan diuji. **Boot Windows sendiri belum pernah diuji** (installer Windows tidak tersedia di lingkungan pengembangan), dan interpreter saat ini (±100 juta instruksi/detik) terlalu lambat untuk Windows yang nyaman dipakai. Itu butuh JIT; lihat [Peta jalan](#peta-jalan).
 
 ## Isi repo
 
 | Folder | Isi |
 |---|---|
-| `core/` | Interpreter CPU A64, MMU (translasi stage 1, TLB), register sistem |
-| `devices/` | GICv3, UART PL011, RTC PL031, perangkat kontrol WindDroid |
-| `host/` | Bus fisik, loader ELF/raw, PSCI, timer generik, run loop, CLI `winddroid-vm` |
+| `core/` | Interpreter CPU A64 (integer, FP, AdvSIMD), MMU stage 1 + TLB, register sistem |
+| `devices/` | GICv3 + ITS, PL011, PL031, flash CFI, fw_cfg, PCIe (ECAM, MSI-X), ramfb, NVMe, xHCI + HID + mass storage, image disk |
+| `host/` | Bus fisik, device tree, tabel ACPI, PSCI, timer, run loop, CLI `winddroid-vm` |
 | `include/` | API publik engine (`winddroid.h`) |
-| `guest/` | Program tamu AArch64: runtime, program uji, dan **WindDroid Monitor** (demo interaktif) |
-| `tests/` | Generator tes acak + model referensi Python, unit test, runner, uji mutasi |
+| `firmware/` | EDK2 ArmVirtQemu `QEMU_EFI.fd`, `QEMU_VARS.fd`, UEFI Shell (BSD-2-Clause-Patent) |
+| `guest/` | Program tamu AArch64: tes, dan **WindDroid Monitor** (demo) |
+| `tests/` | Generator tes acak + model referensi, unit test, tes image disk, tes firmware, uji mutasi |
 | `apk/` | Aplikasi Android (Java + JNI, tanpa AndroidX) |
 
 ## Yang sudah didukung
 
-**CPU (EL0 + EL1, AArch64)**
-- Seluruh instruksi integer ARMv8.0: aritmetika/logika (imm, shifted, extended), bitfield, EXTR, MADD/MSUB/SMULL/UMULH, UDIV/SDIV, CLZ/CLS/RBIT/REV, CSEL/CCMP, semua cabang
-- Load/store semua mode pengalamatan, pasangan (LDP/STP/LDPSW), literal, unprivileged (LDTR/STTR)
-- Exclusive (LDXR/STXR/LDXP/STXP), acquire/release, **LSE atomics** (LDADD/LDCLR/LDEOR/LDSET/LDSMAX/…/SWP/CAS/CASP), **CRC32/CRC32C**, LDAPR (RCpc)
-- Exception: SVC, BRK, undefined, data/instruction abort, alignment, IRQ; ERET; SP_EL0/SP_EL1; PAN
-- Register sistem: SCTLR/TCR/TTBR/MAIR/VBAR/ESR/FAR/ELR/SPSR/PAR, register ID, cache info, DC ZVA, AT, TLBI, timer
-- FP/SIMD **belum** — dilaporkan "tidak ada" di `ID_AA64PFR0_EL1` dan menghasilkan exception undefined
+**CPU (EL0 + EL1)**: semua instruksi integer ARMv8.0 + LSE atomics, CRC32, RCpc; **FP dan AdvSIMD (NEON) lengkap** dengan semantik ARM yang persis (NaN, FPCR.DN/FZ, mode pembulatan, estimasi FRECPE/FRSQRTE, trap CPACR); exception, PAN, MMU 4 KiB dengan fault yang benar.
 
-**MMU:** granule 4 KiB, TTBR0/TTBR1, T0SZ/T1SZ, blok 1 GiB/2 MiB dan halaman 4 KiB, AP/UXN/PXN/WXN, Access Flag, PAN, TBI, fault dengan level yang benar, TLB 1024 entri
-
-**Mesin (peta memori QEMU `virt`)**
+**Platform (peta memori QEMU `virt`)**
 
 | Alamat | Perangkat |
 |---|---|
-| `0x08000000` | GICv3 distributor (96 jalur interupsi) |
-| `0x080A0000` | GICv3 redistributor (CPU 0) |
-| `0x09000000` | UART PL011 (IRQ 33) |
-| `0x09010000` | RTC PL031 |
-| `0x09100000` | Perangkat kontrol WindDroid (exit code, penghitung instruksi, jam host) |
-| `0x40000000` | RAM (128 MB – 2 GB) |
+| `0x00000000` | Flash CFI 64 MiB: firmware UEFI (bank 0) dan NVRAM (bank 1) |
+| `0x08000000` | GICv3 distributor, `0x08080000` **ITS**, `0x080A0000` redistributor (LPI) |
+| `0x09000000` | UART PL011, `0x09010000` RTC PL031, `0x09020000` fw_cfg (MMIO + DMA) |
+| `0x10000000` | Jendela MMIO PCIe, `0x3F000000` ECAM, `0x8000000000` MMIO 64-bit |
+| `0x40000000` | RAM |
 
-Timer generik 62,5 MHz (PPI 27 virtual, PPI 30 fisik), PSCI 1.0 lewat HVC/SMC (SYSTEM_OFF, SYSTEM_RESET, CPU_ON, FEATURES, …).
+- **UEFI**: EDK2 `QEMU_EFI.fd` resmi, device tree, fw_cfg dengan `etc/table-loader` (ACPI: DSDT, FADT, MADT dengan ITS, **IORT**, GTDT, MCFG, SPCR, DBG2), `ramfb` → GOP
+- **NVMe 1.4** di PCIe (driver bawaan Windows `stornvme`), antrean admin/I-O, PRP, MSI-X per antrean
+- **xHCI** (driver bawaan Windows `usbxhci`): keyboard HID, tablet absolut, USB disk, **USB DVD-ROM** (SCSI MMC) untuk ISO
+- **Image disk** tanpa memuat ke RAM: raw/IMG, ISO, **VHDX** (dinamis/tetap, sektor 512/4096, replay log, alokasi blok, membuat baru), VHD (tetap/dinamis). Image diferensial (punya parent) ditolak dengan pesan yang jelas.
 
 ## Hasil pengujian
 
-`make test` menjalankan:
+`make test` menjalankan semuanya (juga di GitHub Actions pada x86-64 dan ARM64 asli):
 
-| Tes | Isi | Hasil |
-|---|---|---|
-| `unit_tests` | Decoder logical-immediate dibandingkan dengan **8.192 encoding** hasil disassembler LLVM, loader ELF | lolos |
-| `alu_gen` | **4.000** instruksi acak dibandingkan dengan model referensi Python (hasil + flag NZCV) | 0 gagal |
-| `mem_gen` | **4.117** cek load/store di semua mode pengalamatan terhadap model memori Python | 0 gagal |
-| `t_sys` | Exception, ESR/ELR/FAR, alignment, sysreg, DC ZVA, PSCI, exclusive, LSE atomics | lolos |
-| `t_mmu` | Tabel halaman, fault translasi/izin/access-flag di level yang benar, AT, TLBI, eksekusi dari VA tinggi, PXN/UXN, blok 2 MiB | lolos |
-| `t_el0` | Masuk user mode, syscall, trap instruksi privileged dari EL0, fault izin, WFI trap, PAN, LDTR/STTR | lolos |
-| `t_irq` | GICv3 + timer + SGI + interupsi RX UART + masking prioritas | lolos |
-| `t_cprog_O0/O2/Os` | Kode C hasil compiler: SHA-256 (vektor uji FIPS, termasuk 1 juta 'a'), CRC32, quicksort 4.096 elemen, aritmetika 64/128-bit, jump table | lolos |
-| `monitor` | Program demo interaktif dijalankan dengan input skrip | lolos |
+| Kelompok | Isi |
+|---|---|
+| CPU | 4.000 instruksi ALU acak + 4.117 cek load/store vs model Python; **108.000+ vektor FP/SIMD** bit-exact vs referensi `fractions.Fraction`; program C dengan vektor uji SHA-256 resmi |
+| Sistem | exception, MMU, EL0, GICv3 + timer + UART IRQ |
+| `t_msi` | ITS + LPI + MSI-X dari sisi OS: NVMe (identify, baca/tulis, masking vektor), xHCI (address device, 70 transfer kontrol yang memutar ring) |
+| Firmware | EDK2 boot ke menu boot, Setup, NVRAM tersimpan, layar GOP, keyboard USB di menu boot, ACPI divalidasi ACPICA `acpiexec` |
+| Disk | UEFI Shell boot dari NVMe (raw dan VHDX), salin file 3 MB, tulis file, mode read-only; boot ISO bergaya Windows dari USB DVD; baca/tulis USB disk |
+| Image | sampel asli Hyper-V/Virtual PC/Disk2VHD (dari qemu-iotests), log kotor Hyper-V, uji acak vs cermin RAM, struktur VHDX dicek parser Python independen |
 
-**Uji mutasi** (`tests/mutation_test.py`): 18 bug sengaja disuntikkan ke engine satu per satu (flag overflow salah, kondisi GE/LT terbalik, halaman read-only bisa ditulis, PAN diabaikan, STXR selalu sukses, dll). **Ke-18 bug tertangkap** oleh suite — ini bukti bahwa tes-tes di atas benar-benar memeriksa perilaku.
-
-Kecepatan interpreter di host x86-64: sekitar 50–100 juta instruksi per detik.
+**Uji mutasi** (`tests/mutation_test.py`): **52 bug** disuntikkan satu per satu (CPU, FP, SIMD, VHDX, VHD, USB, NVMe, xHCI, ITS, MSI-X). Semuanya tertangkap.
 
 ## Membangun
 
 ```sh
-# engine + semua tes (butuh clang, lld, python3)
-make test
+make test                                   # engine + semua tes (clang, lld, python3)
 
-# jalankan program tamu
-build/winddroid-vm guest/build/monitor.elf
-build/winddroid-vm -i 'help\nbench\n' guest/build/monitor.elf
+# UEFI Shell dari disk NVMe, keyboard USB, ISO di USB DVD:
+build/winddroid-vm -r -m 2048 -b firmware/QEMU_EFI.fd -v vars.fd \
+    -D windows.vhdx -c Win11_Arm64.iso -U -I
 
-# APK (butuh Android SDK + NDK)
-cd apk && ./gradlew assembleRelease
+build/disktool create disk.vhdx 64G         # buat VHDX dinamis kosong
+build/disktool info  image.vhdx
+
+cd apk && ./gradlew assembleRelease         # APK (Android SDK + NDK)
 ```
-
-APK dibangun otomatis oleh GitHub Actions di setiap push, dan setiap tag `v*` menghasilkan **Release** berisi APK yang sudah ditandatangani.
 
 ## Aplikasi Android
 
-- **▶ Jalankan Monitor**: menyalakan mesin virtual dengan program demo bawaan (perintah `help`, `info`, `selftest`, `bench`, `mandel`, `primes`, `uptime`, `poweroff`)
-- **Muat image…**: pilih ELF AArch64 atau biner mentah (dimuat di `0x40000000`)
-- Pilihan RAM 128 MB – 2 GB, terminal dengan dukungan dasar VT100, statistik MIPS langsung
-- ABI: `arm64-v8a` dan `x86_64`, minimal Android 8.0
+- **▶ Mulai VM UEFI / Windows** — layar penuh dengan tampilan GOP; sentuhan = tablet USB (tap = klik kiri, tap dua jari = klik kanan, geser dua jari = gulir); keyboard fisik dan keyboard layar dikirim sebagai keyboard USB; tombol Esc/Tab/Ctrl/Alt/Win/Del/panah/F2/F12/Ctrl+Alt+Del/Shift+F10; konsol serial
+- **Disk sistem…** — VHDX/VHD/IMG sebagai SSD NVMe (misalnya VHDX Windows 11 ARM64 Insider dari Microsoft)
+- **ISO installer…** — ISO Windows 11 ARM64 sebagai USB DVD
+- **Buat disk baru…** — VHDX dinamis 32–256 GB untuk tujuan instalasi
+- RAM VM 1–8 GB, NVRAM UEFI tersimpan, **Reset NVRAM**
+- **▶ Jalankan Monitor** / **Muat image…** untuk program AArch64 bare-metal
 
-## Peta jalan menuju Windows
+File dibuka lewat pemilih file Android (deskriptor file), jadi image puluhan GB tidak dimuat ke RAM. Simpan image di penyimpanan internal; penyedia cloud yang tidak mendukung akses acak tidak bisa dipakai.
 
-Windows 11 on ARM butuh banyak hal yang belum ada. Urutan pengerjaan yang direncanakan:
+## Peta jalan
 
-1. **FP/AdvSIMD (NEON)** — wajib; kernel dan aplikasi Windows memakainya di mana-mana
-2. **Firmware UEFI** — memuat EDK2 `QEMU_EFI.fd` di flash `0x00000000`, ditambah `fw_cfg` dan **tabel ACPI** (Windows tidak memakai device tree)
-3. **Penyimpanan** — virtio-blk atau NVMe di PCIe ECAM, dengan driver Windows ARM64
-4. **Layar** — `ramfb` dulu (framebuffer sederhana), lalu GPU yang lebih cepat
-5. **USB keyboard/mouse (XHCI) dan jaringan**
-6. **Multi-core (SMP)** dan pemakaian EL2 yang diperlukan beberapa fitur keamanan Windows
-7. **JIT arm64→arm64** seperti Henge, menggantikan interpreter, untuk kecepatan yang layak
+1. ~~FP/AdvSIMD~~, ~~UEFI + fw_cfg + ACPI~~, ~~NVMe~~, ~~ramfb~~, ~~xHCI + keyboard/tablet/storage~~, ~~ITS + MSI-X~~
+2. **Kecepatan**: cache blok terdekode, lalu **JIT arm64→arm64** seperti Henge (diperlukan agar Windows layak dipakai)
+3. **Multi-core (SMP)**
+4. **Jaringan** (USB NCM, driver bawaan Windows) dengan NAT di dalam aplikasi
+5. GPU yang lebih cepat dari ramfb, EL2
 
-Referensi yang dipakai: peta memori dan perilaku perangkat dari `hw/arm/virt.c` di QEMU, spesifikasi GICv3 (ARM IHI 0069), dan ARM Architecture Reference Manual (DDI 0487).
+Referensi: `hw/arm/virt.c` QEMU, GICv3/ITS (ARM IHI 0069), ARM ARM (DDI 0487), NVMe 1.4, xHCI 1.1, USB Mass Storage BOT, SCSI SBC/MMC, [MS-VHDX], spesifikasi VHD, IORT (ARM DEN 0049), ACPI 6.
 
 ## Lisensi
 
-GPL-2.0-or-later.
+GPL-2.0-or-later. Firmware EDK2 di `firmware/`: BSD-2-Clause-Patent (lihat `firmware/EDK2-LICENSE.txt`). Sampel image di `tests/samples/` berasal dari qemu-iotests (GPL-2.0).

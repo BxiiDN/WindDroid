@@ -285,7 +285,12 @@ def main():
     ap.add_argument("--only-disks", action="store_true", help="run only the UEFI disk and USB tests")
     args = ap.parse_args()
 
-    msidisk = os.path.join(args.guests, "msi_disk.img")
+    import atexit
+    import shutil
+    import tempfile
+    msidir = tempfile.mkdtemp(prefix="wd-msi-")
+    atexit.register(shutil.rmtree, msidir, True)
+    msidisk = os.path.join(msidir, "msi_disk.img")
     with open(msidisk, "wb") as f:
         f.write(b"WDMSI")
         f.truncate(1 << 20)

@@ -179,6 +179,28 @@ int wd_decode_bitmask(int sf, int N, int imms, int immr, uint64_t *out)
     return 1;
 }
 
+/* All 2^13 (N, immr, imms) combinations decoded once; bit 0 of valid64/valid32 per entry. */
+static uint64_t bm_val[8192];
+static uint8_t bm_ok[8192];       /* bit0: valid for sf=1, bit1: valid for sf=0 */
+static int bm_ready;
+
+static inline int bitmask_fast(int sf, uint32_t key, uint64_t *out)
+{
+    if (__builtin_expect(!bm_ready, 0)) {
+        for (uint32_t k = 0; k < 8192; k++) {
+            uint64_t v = 0, v32 = 0;
+            int ok64 = wd_decode_bitmask(1, (int)(k >> 12), (int)(k & 63), (int)((k >> 6) & 63), &v);
+            int ok32 = wd_decode_bitmask(0, (int)(k >> 12), (int)(k & 63), (int)((k >> 6) & 63), &v32);
+            bm_val[k] = v;
+            bm_ok[k] = (uint8_t)(ok64 | (ok32 << 1));
+        }
+        bm_ready = 1;
+    }
+    if (!(bm_ok[key] & (sf ? 1 : 2))) return 0;
+    *out = sf ? bm_val[key] : bm_val[key] & 0xFFFFFFFFULL;
+    return 1;
+}
+
 static uint64_t shift_reg(uint64_t v, int type, int amt, int sf)
 {
     int size = sf ? 64 : 32;
@@ -266,9 +288,9 @@ static void dp_imm(wd_machine *m, uint32_t insn)
         return;
     }
     case 4: {                                           /* logical immediate */
-        int opc = (insn >> 29) & 3, N = (insn >> 22) & 1;
+        int opc = (insn >> 29) & 3;
         uint64_t imm;
-        if (!wd_decode_bitmask(sf, N, (insn >> 10) & 63, (insn >> 16) & 63, &imm)) wd_undef(m);
+        if (!bitmask_fast(sf, (insn >> 10) & 0x1FFF, &imm)) wd_undef(m);   /* N:immr:imms */
         uint64_t a = trunc_sf(sf, X(c, rn)), r;
         switch (opc) {
         case 0: r = a & imm; break;

@@ -19,6 +19,8 @@
 void wd_tlb_flush(wd_machine *m)
 {
     for (unsigned i = 0; i < TLB_SIZE; i++) m->tlb[i].vpn = ~0ULL;
+    for (int k = 0; k < 3; k++)
+        for (unsigned i = 0; i < FTLB_SIZE; i++) m->ftlb_r[k][i].vpn = m->ftlb_w[k][i].vpn = ~0ULL;
     m->fetch_vpn = ~0ULL;
 }
 
@@ -185,7 +187,7 @@ void wd_check_align(wd_machine *m, uint64_t va, int size, int write)
     }
 }
 
-uint64_t wd_read(wd_machine *m, uint64_t va, int size, int unpriv)
+uint64_t wd_read_slow(wd_machine *m, uint64_t va, int size, int unpriv)
 {
     if ((m->cpu.sctlr & 2) && (va & (uint64_t)(size - 1))) wd_check_align(m, va, size, 0);
     if ((va & 0xFFF) + (uint64_t)size > 0x1000) {
@@ -199,6 +201,12 @@ uint64_t wd_read(wd_machine *m, uint64_t va, int size, int unpriv)
     wd_tlbe *e = wd_translate(m, va, ACC_READ, unpriv);
     if (e->host) {
         uint8_t *p = e->host + (va & 0xFFF);
+        if (!unpriv) {                         /* translation and permission passed: cache it */
+            unsigned i = (unsigned)(va >> 12) & (FTLB_SIZE - 1);
+            int mode = wd_mem_mode(m);
+            m->ftlb_r[mode][i].vpn = va >> 12;
+            m->ftlb_r[mode][i].host = e->host;
+        }
         switch (size) {
         case 1: return *p;
         case 2: { uint16_t v; memcpy(&v, p, 2); return v; }
@@ -209,7 +217,7 @@ uint64_t wd_read(wd_machine *m, uint64_t va, int size, int unpriv)
     return wd_phys_read(m, e->pa_page | (va & 0xFFF), size);
 }
 
-void wd_write(wd_machine *m, uint64_t va, int size, uint64_t val, int unpriv)
+void wd_write_slow(wd_machine *m, uint64_t va, int size, uint64_t val, int unpriv)
 {
     if ((m->cpu.sctlr & 2) && (va & (uint64_t)(size - 1))) wd_check_align(m, va, size, 1);
     if ((va & 0xFFF) + (uint64_t)size > 0x1000) {
@@ -221,6 +229,12 @@ void wd_write(wd_machine *m, uint64_t va, int size, uint64_t val, int unpriv)
     wd_tlbe *e = wd_translate(m, va, ACC_WRITE, unpriv);
     if (e->host && !e->ro) {
         uint8_t *p = e->host + (va & 0xFFF);
+        if (!unpriv) {
+            unsigned i = (unsigned)(va >> 12) & (FTLB_SIZE - 1);
+            int mode = wd_mem_mode(m);
+            m->ftlb_w[mode][i].vpn = va >> 12;
+            m->ftlb_w[mode][i].host = e->host;
+        }
         switch (size) {
         case 1: *p = (uint8_t)val; break;
         case 2: { uint16_t v = (uint16_t)val; memcpy(p, &v, 2); break; }

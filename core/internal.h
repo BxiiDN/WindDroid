@@ -119,6 +119,7 @@ typedef struct {
 
 #define TLB_BITS 10
 #define TLB_SIZE (1u << TLB_BITS)
+#define FTLB_SIZE 256
 
 enum {
     P_R0 = 1, P_W0 = 2, P_X0 = 4,
@@ -210,6 +211,8 @@ struct wd_machine {
     uint64_t rt_base_ns;
 
     wd_tlbe tlb[TLB_SIZE];
+    /* fast TLB for loads/stores that hit RAM: [mode][index], mode 0 = EL0, 1 = EL1, 2 = EL1 with PAN */
+    struct { uint64_t vpn; uint8_t *host; } ftlb_r[3][FTLB_SIZE], ftlb_w[3][FTLB_SIZE];
     uint64_t fetch_vpn;
     uint8_t *fetch_host;
     int fetch_el;
@@ -261,8 +264,11 @@ void wd_tlb_flush(wd_machine *m);
 wd_tlbe *wd_translate(wd_machine *m, uint64_t va, int acc, int unpriv);
 /* AT instructions: translate without raising, write PAR_EL1. */
 void wd_at(wd_machine *m, uint64_t va, int acc, int unpriv);
-uint64_t wd_read(wd_machine *m, uint64_t va, int size, int unpriv);
-void wd_write(wd_machine *m, uint64_t va, int size, uint64_t val, int unpriv);
+uint64_t wd_read_slow(wd_machine *m, uint64_t va, int size, int unpriv);
+void wd_write_slow(wd_machine *m, uint64_t va, int size, uint64_t val, int unpriv);
+static inline int wd_mem_mode(const wd_machine *m);
+static inline uint64_t wd_read(wd_machine *m, uint64_t va, int size, int unpriv);
+static inline void wd_write(wd_machine *m, uint64_t va, int size, uint64_t val, int unpriv);
 uint32_t wd_fetch(wd_machine *m, uint64_t va);
 void wd_check_align(wd_machine *m, uint64_t va, int size, int write);
 
@@ -390,4 +396,52 @@ static inline uint64_t wd_mask(int bits)
 #define SR(op0, op1, crn, crm, op2) \
     ((uint32_t)((((op0) - 2) << 14) | ((op1) << 11) | ((crn) << 7) | ((crm) << 3) | (op2)))
 
+/* ---------------------------------------------------------------- inline memory fast path */
+
+static inline int wd_mem_mode(const wd_machine *m)
+{
+    const wd_cpu *c = &m->cpu;
+    if (c->el == 0) return 0;
+    return (c->pan && (c->sctlr & 1)) ? 2 : 1;
+}
+
+static inline uint64_t wd_read(wd_machine *m, uint64_t va, int size, int unpriv)
+{
+    uint64_t vpn = va >> 12;
+    if (!unpriv && (va & 0xFFF) + (uint64_t)size <= 0x1000 && !((m->cpu.sctlr & 2) && (va & (uint64_t)(size - 1)))) {
+        int mode = wd_mem_mode(m);
+        unsigned i = (unsigned)vpn & (FTLB_SIZE - 1);
+        if (m->ftlb_r[mode][i].vpn == vpn) {
+            const uint8_t *p = m->ftlb_r[mode][i].host + (va & 0xFFF);
+            switch (size) {
+            case 1: return *p;
+            case 2: { uint16_t v; memcpy(&v, p, 2); return v; }
+            case 4: { uint32_t v; memcpy(&v, p, 4); return v; }
+            default: { uint64_t v; memcpy(&v, p, 8); return v; }
+            }
+        }
+    }
+    return wd_read_slow(m, va, size, unpriv);
+}
+
+static inline void wd_write(wd_machine *m, uint64_t va, int size, uint64_t val, int unpriv)
+{
+    uint64_t vpn = va >> 12;
+    if (!unpriv && (va & 0xFFF) + (uint64_t)size <= 0x1000 && !((m->cpu.sctlr & 2) && (va & (uint64_t)(size - 1)))) {
+        int mode = wd_mem_mode(m);
+        unsigned i = (unsigned)vpn & (FTLB_SIZE - 1);
+        if (m->ftlb_w[mode][i].vpn == vpn) {
+            uint8_t *p = m->ftlb_w[mode][i].host + (va & 0xFFF);
+            switch (size) {
+            case 1: *p = (uint8_t)val; return;
+            case 2: { uint16_t v = (uint16_t)val; memcpy(p, &v, 2); return; }
+            case 4: { uint32_t v = (uint32_t)val; memcpy(p, &v, 4); return; }
+            default: memcpy(p, &val, 8); return;
+            }
+        }
+    }
+    wd_write_slow(m, va, size, val, unpriv);
+}
+
 #endif
+
