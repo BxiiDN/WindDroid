@@ -20,6 +20,8 @@ jobs:
         run: |
           python3 tests/jit_diff.py build/winddroid-vm guest/build/t_irq.elf -i 'hey!' || true
           python3 tests/jit_diff.py build/winddroid-vm guest/build/t_sys.elf || true
+          echo "== full-size blocks"
+          WD_JIT_FULL=1 python3 tests/jit_diff.py build/winddroid-vm guest/build/t_irq.elf -i 'hey!' || true
       - name: Guest tests with the translator
         run: python3 tests/run_tests.py --jit --no-firmware
       - name: Firmware, disk and USB tests with the translator

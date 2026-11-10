@@ -17,7 +17,7 @@ def trace(vm, args, env):
 
 def main():
     vm, elf, extra = sys.argv[1], sys.argv[2], sys.argv[3:]
-    env = dict(os.environ, WD_JIT_MAX="1")
+    env = dict(os.environ) if os.environ.get("WD_JIT_FULL") else dict(os.environ, WD_JIT_MAX="1")
     a, _ = trace(vm, extra + [elf], env)
     b, out = trace(vm, ["-J"] + extra + [elf], env)
     # the translator reports after each block: compare at equal instruction counts

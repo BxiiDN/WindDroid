@@ -72,6 +72,7 @@ typedef struct {
     uint32_t *p;                          /* write pointer (RW view) */
     uint32_t *end;
     int overflow;
+    unsigned icount_target, icount_done;  /* guest instructions to have counted before a helper call */
 } emitter;
 
 static void emit(emitter *e, uint32_t w)
@@ -107,6 +108,13 @@ static void store_nzcv(emitter *e) { emit(e, 0xD53B4200u | T4); str_w(e, T4, HC,
 
 static void call(emitter *e, const void *fn)
 {
+    /* the helper may raise a guest exception: count this instruction and the ones before it */
+    if (e->icount_target > e->icount_done) {
+        ldr_x(e, 17, HC, OFF_ICOUNT);
+        emit(e, 0x91000000u | (e->icount_target - e->icount_done) << 10 | 17u << 5 | 17u);   /* add x17, x17, #d */
+        str_x(e, 17, HC, OFF_ICOUNT);
+        e->icount_done = e->icount_target;
+    }
     mov_imm(e, 16, (uint64_t)(uintptr_t)fn);
     emit(e, 0xD63F0200u);                                                         /* blr x16 */
 }
@@ -553,7 +561,7 @@ static block *translate(wd_machine *m, jit_state *j, uint64_t pc, const uint8_t 
     b->fn = NULL;
     uint32_t sp_off = (mode & 1) && (mode & 2) ? OFF_SP1 : OFF_SP0;
 
-    emitter e = { j, j->wcode + j->used, j->wcode + j->cap, 0 };
+    emitter e = { j, j->wcode + j->used, j->wcode + j->cap, 0, 0, 0 };
     uint32_t *start = e.p;
     prologue(&e);
     int ended = 0;
@@ -570,6 +578,8 @@ static block *translate(wd_machine *m, jit_state *j, uint64_t pc, const uint8_t 
         uint32_t insn;
         memcpy(&insn, host + 4 * b->n, 4);
         uint32_t *mark = e.p;
+        unsigned saved_done = e.icount_done;
+        e.icount_target = b->n + 1;
         if (tr_branch(&e, sp_off, insn, p)) {
             b->words[b->n++] = insn;
             ended = 1;
@@ -577,6 +587,7 @@ static block *translate(wd_machine *m, jit_state *j, uint64_t pc, const uint8_t 
         }
         if (!tr_dp(&e, sp_off, insn, p) && !tr_ldst(&e, sp_off, insn, p)) {
             e.p = mark;
+            e.icount_done = saved_done;
             break;
         }
         b->words[b->n++] = insn;
@@ -588,10 +599,12 @@ static block *translate(wd_machine *m, jit_state *j, uint64_t pc, const uint8_t 
         return b;                                    /* not translatable: interpreter */
     }
     if (!ended) set_pc(&e, pc + 4ULL * b->n);
-    /* icount once per block */
-    ldr_x(&e, T0, HC, OFF_ICOUNT);
-    add_imm64(&e, T0, T0, b->n);
-    str_x(&e, T0, HC, OFF_ICOUNT);
+    /* the remaining instruction count */
+    if (b->n > e.icount_done) {
+        ldr_x(&e, T0, HC, OFF_ICOUNT);
+        add_imm64(&e, T0, T0, (int64_t)(b->n - e.icount_done));
+        str_x(&e, T0, HC, OFF_ICOUNT);
+    }
     epilogue(&e);
     if (e.overflow) { b->n = 0; return b; }
     size_t words = (size_t)(e.p - start);
