@@ -243,3 +243,8 @@ JNIEXPORT jbyteArray JNICALL Java_com_bxiidn_winddroid_Engine_nativeTakeVars(JNI
     }
     return a;
 }
+
+JNIEXPORT jboolean JNICALL Java_com_bxiidn_winddroid_Engine_nativeJitActive(JNIEnv *env, jclass cls, jlong p)
+{
+    return wd_jit_active(H(p)->m) ? JNI_TRUE : JNI_FALSE;
+}

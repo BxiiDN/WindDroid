@@ -146,8 +146,8 @@ public class VmActivity extends Activity implements Engine.Listener {
                 desc.append("DVD: ").append(prefs.getString(PREF_ISO_NAME, "iso"));
             }
         }
-        final String info = String.format(Locale.US, "RAM %d MB  ·  %s", ram, desc.length() > 0 ? desc : "tanpa disk");
-        status.setText(info);
+        final String info0 = String.format(Locale.US, "RAM %d MB  ·  %s", ram, desc.length() > 0 ? desc : "tanpa disk");
+        status.setText(info0);
         try {
             engine.start(ram, true, h -> {
                 Engine.loadFirmware(h, code, fvars);
@@ -158,11 +158,16 @@ public class VmActivity extends Activity implements Engine.Listener {
                     Engine.attachDisk(h, fd, f[1], false, names.get(i++));
                 }
                 Engine.attachUsbInput(h);
+                jit = Engine.jitActive(h);
             }, this);
         } finally {
             for (int[] f : fds) if (f[0] >= 0) closeFd(f[0]);
         }
+        status.setText(info0 + (jit ? "  ·  JIT" : "  ·  interpreter"));
+        if (logOutput) Log.i(TAG, jit ? "JIT active" : "JIT not active (interpreter)");
     }
+
+    private boolean jit;
 
     private int openFd(Uri uri, String mode) throws IOException {
         ParcelFileDescriptor pfd;

@@ -304,4 +304,11 @@ public final class Engine {
     private static native int nativeBlit(long h, Bitmap bitmap);
 
     private static native byte[] nativeTakeVars(long h, boolean force);
+
+    private static native boolean nativeJitActive(long h);
+
+    /** True when guest code is translated to host code (ARM64 devices); call from Setup. */
+    static boolean jitActive(long h) {
+        return nativeJitActive(h);
+    }
 }
