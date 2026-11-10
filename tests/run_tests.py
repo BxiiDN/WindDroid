@@ -29,6 +29,7 @@ TESTS = [
     ("t_simdmem", [], ["t_simdmem: 0 failures"]),
     ("t_float", [], subprocess.run([sys.executable, os.path.join(ROOT, "tests", "float_ref.py")],
                                    capture_output=True, text=True).stdout.split("\n")[:3]),
+    ("t_msi", ["-U", "-D", "{msidisk}"], ["msi: 0 failures"]),
     ("monitor", ["-i", "help\\ninfo\\nselftest\\nprimes 50\\nmandel\\nbench\\npoweroff\\n"],
      ["WindDroid Monitor", "selftest: all 6 checks passed",
       "2 3 5 7 11 13 17 19 23 29 31 37 41 43 47", "sha256(abc) = ba7816bf", "Powering off"]),
@@ -284,6 +285,10 @@ def main():
     ap.add_argument("--only-disks", action="store_true", help="run only the UEFI disk and USB tests")
     args = ap.parse_args()
 
+    msidisk = os.path.join(args.guests, "msi_disk.img")
+    with open(msidisk, "wb") as f:
+        f.write(b"WDMSI")
+        f.truncate(1 << 20)
     failed = []
     if args.only_disks:
         failed = run_disk_tests(args.vm, args.quiet, max(args.timeout, 300))
@@ -291,7 +296,7 @@ def main():
         return 1 if failed else 0
     for name, extra, want in TESTS:
         elf = os.path.join(args.guests, name + ".elf")
-        cmd = [args.vm, "-q", "-n", "400000000"] + extra + [elf]
+        cmd = [args.vm, "-q", "-n", "400000000"] + [a.replace("{msidisk}", msidisk) for a in extra] + [elf]
         t0 = time.time()
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)

@@ -24,6 +24,8 @@ typedef struct wd_machine wd_machine;
 /* Physical memory map (same addresses as QEMU virt). */
 #define WD_FLASH_BASE    0x00000000ULL
 #define WD_GICD_BASE     0x08000000ULL
+#define WD_GITS_BASE     0x08080000ULL  /* ITS: control frame + translation frame */
+#define WD_GITS_TRANSLATER (WD_GITS_BASE + 0x10040ULL)
 #define WD_GICR_BASE     0x080A0000ULL
 #define WD_UART_BASE     0x09000000ULL
 #define WD_RTC_BASE      0x09010000ULL

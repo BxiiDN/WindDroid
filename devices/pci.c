@@ -14,6 +14,8 @@ static inline uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_
 static inline void wr16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 static inline void wr32(uint8_t *p, uint32_t v) { for (int i = 0; i < 4; i++) p[i] = (uint8_t)(v >> (8 * i)); }
 
+static void msix_unmask_check(wd_machine *m, wd_pcidev *d);
+
 void wd_pci_init_dev(wd_pcidev *d, int devfn, uint16_t vendor, uint16_t device, uint32_t class_rev,
                      uint16_t subvendor, uint16_t subdev)
 {
@@ -78,7 +80,7 @@ static void update_intx(wd_machine *m, wd_pcidev *d)
         wd_pcidev *o = m->pci[i];
         if (!o->cfg[0x3D]) continue;
         if (3 + (((o->devfn >> 3) + o->cfg[0x3D] - 1) & 3) != spi) continue;
-        if (o->intx && !((rd16(o->cfg + 0x04) >> 10) & 1)) level = 1;
+        if (o->intx && !((rd16(o->cfg + 0x04) >> 10) & 1) && !wd_pci_msix_enabled(o)) level = 1;
     }
     (void)disabled;
     wd_gic_set_line(m, 32 + spi, level);
@@ -107,6 +109,10 @@ void wd_pci_cfg_write(wd_machine *m, wd_pcidev *d, uint32_t off, int size, uint3
     }
     if (d->on_cfg_write) d->on_cfg_write(m, d, off, size, val);
     if (off <= 0x05 && off + (uint32_t)size > 0x04) update_intx(m, d);
+    if (d->msix_cap && off <= (uint32_t)d->msix_cap + 3 && off + (uint32_t)size > (uint32_t)d->msix_cap + 2) {
+        update_intx(m, d);
+        msix_unmask_check(m, d);
+    }
 }
 
 /* ---------------------------------------------------------------- host bridge */
@@ -160,12 +166,109 @@ static wd_pcidev *bar_lookup(wd_machine *m, uint64_t pa, int io, int *bar, uint6
     return NULL;
 }
 
+/* ---------------------------------------------------------------- MSI-X */
+
+int wd_pci_msix_init(wd_pcidev *d, int nvec, int bar, uint32_t table_off, uint32_t pba_off)
+{
+    if (nvec < 1 || nvec > 128) return -1;
+    d->msix_table = calloc((size_t)nvec, 16);
+    if (!d->msix_table) return -1;
+    for (int i = 0; i < nvec; i++) d->msix_table[16 * i + 12] = 1;      /* vectors start masked */
+    d->msix_n = nvec;
+    d->msix_bar = bar;
+    d->msix_table_off = table_off;
+    d->msix_pba_off = pba_off;
+    int c = wd_pci_add_cap(d, 0x11, 12);
+    d->msix_cap = c;
+    wr16(d->cfg + c + 2, (uint16_t)(nvec - 1));
+    wr32(d->cfg + c + 4, table_off | (uint32_t)bar);
+    wr32(d->cfg + c + 8, pba_off | (uint32_t)bar);
+    d->wmask[c + 3] = 0xC0;                                             /* MSI-X Enable, Function Mask */
+    return 0;
+}
+
+int wd_pci_msix_enabled(const wd_pcidev *d)
+{
+    return d->msix_cap && (d->cfg[d->msix_cap + 3] & 0x80);
+}
+
+static uint32_t requester_id(const wd_pcidev *d)
+{
+    return (uint32_t)d->devfn;                                          /* bus 0 */
+}
+
+static void msix_send(wd_machine *m, wd_pcidev *d, int v)
+{
+    const uint8_t *e = d->msix_table + 16 * v;
+    uint64_t addr = rd32(e) | (uint64_t)rd32(e + 4) << 32;
+    if (!(rd16(d->cfg + 0x04) & 4)) return;                             /* bus mastering off */
+    wd_msi_write(m, requester_id(d), addr, rd32(e + 8));
+}
+
+static int msix_masked(const wd_pcidev *d, int v)
+{
+    return (d->cfg[d->msix_cap + 3] & 0x40) || (d->msix_table[16 * v + 12] & 1);
+}
+
+void wd_pci_msix_notify(wd_machine *m, wd_pcidev *d, int vector)
+{
+    if (!wd_pci_msix_enabled(d) || vector < 0 || vector >= d->msix_n) return;
+    if (msix_masked(d, vector)) {
+        d->msix_pba[vector / 64] |= 1ULL << (vector % 64);
+        return;
+    }
+    msix_send(m, d, vector);
+}
+
+/* deliver what became unmasked */
+static void msix_unmask_check(wd_machine *m, wd_pcidev *d)
+{
+    if (!wd_pci_msix_enabled(d)) return;
+    for (int v = 0; v < d->msix_n; v++)
+        if ((d->msix_pba[v / 64] >> (v % 64) & 1) && !msix_masked(d, v)) {
+            d->msix_pba[v / 64] &= ~(1ULL << (v % 64));
+            msix_send(m, d, v);
+        }
+}
+
+static int msix_mmio(wd_machine *m, wd_pcidev *d, int bar, uint64_t off, int size, uint64_t *val, int write)
+{
+    if (!d->msix_n || bar != d->msix_bar) return 0;
+    if (off >= d->msix_table_off && off < d->msix_table_off + 16u * (unsigned)d->msix_n) {
+        uint64_t o = off - d->msix_table_off;
+        if (write) {
+            for (int i = 0; i < size; i++) d->msix_table[o + (unsigned)i] = (uint8_t)(*val >> (8 * i));
+            msix_unmask_check(m, d);
+        } else {
+            uint64_t v = 0;
+            for (int i = 0; i < size; i++) v |= (uint64_t)d->msix_table[o + (unsigned)i] << (8 * i);
+            *val = v;
+        }
+        return 1;
+    }
+    if (off >= d->msix_pba_off && off < d->msix_pba_off + 16) {
+        if (!write) {
+            uint64_t o = off - d->msix_pba_off;
+            uint64_t v = 0;
+            for (int i = 0; i < size; i++) {
+                uint64_t byte = o + (unsigned)i;
+                v |= ((d->msix_pba[byte / 8] >> (8 * (byte % 8))) & 0xFF) << (8 * i);
+            }
+            *val = v;
+        }
+        return 1;
+    }
+    return 0;
+}
+
 uint64_t wd_pci_mmio_read(wd_machine *m, uint64_t pa, int size, int io)
 {
     int bar;
-    uint64_t off;
+    uint64_t off, v = 0;
     wd_pcidev *d = bar_lookup(m, pa, io, &bar, &off);
-    if (!d || !d->bar_read) return 0;
+    if (!d) return 0;
+    if (!io && msix_mmio(m, d, bar, off, size, &v, 0)) return v;
+    if (!d->bar_read) return 0;
     return d->bar_read(m, d, bar, off, size);
 }
 
@@ -174,7 +277,9 @@ void wd_pci_mmio_write(wd_machine *m, uint64_t pa, int size, uint64_t val, int i
     int bar;
     uint64_t off;
     wd_pcidev *d = bar_lookup(m, pa, io, &bar, &off);
-    if (d && d->bar_write) d->bar_write(m, d, bar, off, size, val);
+    if (!d) return;
+    if (!io && msix_mmio(m, d, bar, off, size, &val, 1)) return;
+    if (d->bar_write) d->bar_write(m, d, bar, off, size, val);
 }
 
 /* DMA helpers for devices (guest physical memory, RAM only) */

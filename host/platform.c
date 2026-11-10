@@ -13,6 +13,7 @@
 
 #define PH_GIC  1
 #define PH_CLK  2
+#define PH_ITS  3
 
 #define GIC_SPI 0
 #define GIC_PPI 1
@@ -69,6 +70,13 @@ static void build_dtb(wd_machine *m)
     fdt_prop_u32(&f, "#redistributor-regions", 1);
     { uint64_t r[] = { WD_GICD_BASE, 0x10000, WD_GICR_BASE, 0x20000 }; fdt_prop_reg64(&f, "reg", r, 2); }
     { uint32_t c[] = { GIC_PPI, 9, IRQ_LEVEL_HI }; fdt_prop_cells(&f, "interrupts", c, 3); }
+    fdt_begin(&f, "its@8080000");
+    fdt_prop_u32(&f, "phandle", PH_ITS);
+    fdt_prop_str(&f, "compatible", "arm,gic-v3-its");
+    fdt_prop_empty(&f, "msi-controller");
+    fdt_prop_u32(&f, "#msi-cells", 1);
+    { uint64_t r[] = { WD_GITS_BASE, 0x20000 }; fdt_prop_reg64(&f, "reg", r, 1); }
+    fdt_end(&f);
     fdt_end(&f);
 
     fdt_begin(&f, "timer");
@@ -123,6 +131,7 @@ static void build_dtb(wd_machine *m)
     { uint32_t c[] = { 0, (uint32_t)(WD_PCIE_ECAM_SZ >> 20) - 1 }; fdt_prop_cells(&f, "bus-range", c, 2); }
     fdt_prop_empty(&f, "dma-coherent");
     { uint64_t r[] = { WD_PCIE_ECAM, WD_PCIE_ECAM_SZ }; fdt_prop_reg64(&f, "reg", r, 1); }
+    { uint32_t c[] = { 0, PH_ITS, 0, 0x10000 }; fdt_prop_cells(&f, "msi-map", c, 4); }
     {
         uint32_t c[] = {
             0x01000000, 0, 0, (uint32_t)(WD_PCIE_PIO >> 32), (uint32_t)WD_PCIE_PIO, 0, 0x10000,
@@ -212,8 +221,10 @@ void wd_platform_free(wd_machine *m)
     wd_flash_free(&m->flash[0]);
     wd_flash_free(&m->flash[1]);
     wd_fwcfg_free(&m->fwcfg);
+    wd_its_free(m);
     for (int i = 0; i < m->npci; i++) {
         if (m->pci[i]->on_free) m->pci[i]->on_free(m->pci[i]);
+        free(m->pci[i]->msix_table);
         free(m->pci[i]);
     }
     m->npci = 0;

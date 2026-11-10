@@ -3,7 +3,7 @@
  * ("etc/acpi/tables", "etc/acpi/rsdp", "etc/table-loader") in the format of
  * QEMU's BIOS linker/loader so that EDK2's AcpiPlatformDxe installs them.
  *
- * Tables: DSDT, FADT (hardware reduced, PSCI over HVC), MADT (GICv3), GTDT,
+ * Tables: DSDT, FADT (hardware reduced, PSCI over HVC), MADT (GICv3 + ITS), IORT, GTDT,
  * MCFG, SPCR, DBG2, XSDT and RSDP (ACPI 6.x).
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -350,8 +350,28 @@ void wd_acpi_build(wd_machine *m)
     put8(&t, 0); zero(&t, 3);
     put8(&t, 0xE); put8(&t, 16); putn(&t, 0, 2);      /* GIC redistributor */
     putn(&t, WD_GICR_BASE, 8); putn(&t, 0x20000, 4);
+    put8(&t, 0xF); put8(&t, 20); putn(&t, 0, 2);      /* GIC ITS 0 */
+    putn(&t, 0, 4); putn(&t, WD_GITS_BASE, 8); putn(&t, 0, 4);
     table_end(&t, madt);
     off[n++] = madt;
+
+    /* IORT (revision 0 layout): one ITS group, the PCIe root complex maps every
+     * requester ID 1:1 to an ITS DeviceID */
+    size_t iort = table_begin(&t, "IORT", 0);
+    putn(&t, 2, 4); putn(&t, 48, 4); putn(&t, 0, 4);  /* node count, offset of the first node */
+    size_t its_node = t.len - iort;
+    put8(&t, 0); putn(&t, 24, 2); put8(&t, 0); putn(&t, 0, 4);   /* ITS group node */
+    putn(&t, 0, 4); putn(&t, 0, 4);                   /* no ID mappings */
+    putn(&t, 1, 4); putn(&t, 0, 4);                   /* one ITS: identifier 0 */
+    put8(&t, 2); putn(&t, 52, 2); put8(&t, 0); putn(&t, 0, 4);   /* root complex node */
+    putn(&t, 1, 4); putn(&t, 32, 4);                  /* one ID mapping at offset 32 */
+    putn(&t, 1, 4); put8(&t, 0); putn(&t, 0, 2); put8(&t, 3);    /* coherent, CPM | DACS */
+    putn(&t, 0, 4);                                   /* ATS not supported */
+    putn(&t, 0, 4);                                   /* PCI segment 0 */
+    putn(&t, 0, 4); putn(&t, 0xFFFF, 4);              /* input base, number of IDs - 1 */
+    putn(&t, 0, 4); putn(&t, its_node, 4); putn(&t, 0, 4);   /* output base, ITS group, flags */
+    table_end(&t, iort);
+    off[n++] = iort;
 
     /* GTDT */
     size_t gtdt = table_begin(&t, "GTDT", 3);
@@ -426,7 +446,7 @@ void wd_acpi_build(wd_machine *m)
     ld_pointer(&l, TABLES, TABLES, (uint32_t)(fadt + 140), 8);
     for (int i = 0; i < n; i++) ld_pointer(&l, TABLES, TABLES, (uint32_t)(xent + 8 * (size_t)i), 8);
     ld_pointer(&l, RSDP, TABLES, 24, 8);
-    size_t starts[] = { dsdt, fadt, madt, gtdt, mcfg, spcr, dbg2, xsdt };
+    size_t starts[] = { dsdt, fadt, madt, iort, gtdt, mcfg, spcr, dbg2, xsdt };
     for (size_t i = 0; i < sizeof starts / sizeof starts[0]; i++) {
         uint32_t len = (uint32_t)(t.d[starts[i] + 4] | t.d[starts[i] + 5] << 8 | t.d[starts[i] + 6] << 16 |
                                   (uint32_t)t.d[starts[i] + 7] << 24);

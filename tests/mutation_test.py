@@ -2,7 +2,8 @@
 """Mutation testing: inject known bugs into the engine one at a time and
 check that the test suite catches every one of them.
 
-Usage: mutation_test.py   (run from the repository root after `make test`)
+Usage: mutation_test.py [WORD...]   (run from the repository root after `make test`;
+       WORDs select the mutants whose description contains one of them)
 """
 import os
 import shutil
@@ -115,7 +116,21 @@ MUTANTS = [
      "        if (x->er_seg >= x->erstsz) { x->er_seg = 0; }", "fw"),
     ("xHCI: link TRB toggle cycle ignored", "devices/xhci.c",
      "        if (TRB_TYPE(t) == TR_LINK) {\n            if (t.control & TRB_TC) ccs ^= 1;",
-     "        if (TRB_TYPE(t) == TR_LINK) {\n            if (0) ccs ^= 1;", "fw"),
+     "        if (TRB_TYPE(t) == TR_LINK) {\n            if (0) ccs ^= 1;"),
+    ("xHCI: command ring link toggle ignored", "devices/xhci.c",
+     "            if (t.control & TRB_TC) x->cmd_ccs ^= 1;", "            ;"),
+    ("xHCI: EHB does not gate interrupts", "devices/xhci.c",
+     "    if (!(x->erdp & 8)) raise_irq(x);", "    raise_irq(x);"),
+    # interrupts through the ITS
+    ("GIC: LPI enable bit ignored", "devices/gic.c",
+     "            if (!(cfg & 1)) continue;", "            ;"),
+    ("ITS: events beyond the MAPD size accepted", "devices/its.c",
+     "return d >= 0 && eventid < (1u << (s->dev[d].size + 1));", "return d >= 0;"),
+    ("MSI-X: vector mask ignored", "devices/pci.c",
+     "    if (msix_masked(d, vector)) {", "    if (0) {"),
+    ("MSI-X: pending message lost on unmask", "devices/pci.c",
+     "            d->msix_pba[v / 64] &= ~(1ULL << (v % 64));\n            msix_send(m, d, v);",
+     "            d->msix_pba[v / 64] &= ~(1ULL << (v % 64));"),
     ("xHCI: port reset does not enable the port", "devices/xhci.c",
      "    p->portsc |= PORTSC_PED | PORTSC_PRC;", "    p->portsc |= PORTSC_PRC;", "fw"),
 ]
@@ -125,43 +140,71 @@ def run(cmd, cwd):
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=1800)
 
 
+def check_one(mutant, work, guests):
+    """Apply one mutant in a private copy of the tree; returns (desc, status line, survived)."""
+    desc, path, old, new = mutant[:4]
+    fw = len(mutant) > 4
+    fpath = os.path.join(work, path)
+    orig = open(fpath).read()
+    if orig.count(old) != 1:
+        return desc, f"SKIP  {desc}: pattern not found exactly once in {path}", True
+    open(fpath, "w").write(orig.replace(old, new))
+    try:
+        b = run(["make", "-s", "build/winddroid-vm", "build/unit_tests", "build/disktool"], work)
+        if b.returncode != 0:
+            return desc, f"KILL  {desc} (does not compile)", False
+        u = run([os.path.join(work, "build", "unit_tests")], work)
+        if u.returncode != 0:
+            return desc, f"KILL  {desc}", False
+        t = run([sys.executable, os.path.join(work, "tests", "run_tests.py"), "--quiet", "--no-firmware",
+                 "--vm", os.path.join(work, "build", "winddroid-vm"), "--guests", guests, "--timeout", "60"], work)
+        if t.returncode != 0:
+            return desc, f"KILL  {desc}", False
+        i = run([sys.executable, os.path.join(work, "tests", "image_tests.py")], work)
+        if i.returncode != 0:
+            return desc, f"KILL  {desc}", False
+        if fw:
+            f = run([sys.executable, os.path.join(work, "tests", "run_tests.py"), "--quiet", "--only-disks",
+                     "--vm", os.path.join(work, "build", "winddroid-vm"), "--timeout", "120"], work)
+            if f.returncode != 0:
+                return desc, f"KILL  {desc}", False
+        return desc, f"ALIVE {desc}  <-- not detected", True
+    finally:
+        open(fpath, "w").write(orig)
+
+
 def main():
+    import concurrent.futures
     survived = []
+    workers = max(1, min(4, os.cpu_count() or 1))
     with tempfile.TemporaryDirectory() as tmp:
-        work = os.path.join(tmp, "src")
-        shutil.copytree(ROOT, work, ignore=shutil.ignore_patterns(".git", "apk", "build", "ext"))
         guests = os.path.join(ROOT, "guest", "build")
-        for mutant in MUTANTS:
-            desc, path, old, new = mutant[:4]
-            fw = len(mutant) > 4
-            fpath = os.path.join(work, path)
-            orig = open(fpath).read()
-            if orig.count(old) != 1:
-                print(f"SKIP  {desc}: pattern not found exactly once in {path}")
-                survived.append(desc + " (pattern missing)")
-                continue
-            open(fpath, "w").write(orig.replace(old, new))
-            b = run(["make", "-s", "build/winddroid-vm", "build/unit_tests", "build/disktool"], work)
-            if b.returncode != 0:
-                print(f"KILL  {desc} (does not compile)")
-            else:
-                u = run([os.path.join(work, "build", "unit_tests")], work)
-                t = run([sys.executable, os.path.join(work, "tests", "run_tests.py"), "--quiet", "--no-firmware",
-                         "--vm", os.path.join(work, "build", "winddroid-vm"), "--guests", guests,
-                         "--timeout", "60"], work)
-                i = run([sys.executable, os.path.join(work, "tests", "image_tests.py")], work)
-                f = None
-                if fw and u.returncode == 0 and t.returncode == 0 and i.returncode == 0:
-                    f = run([sys.executable, os.path.join(work, "tests", "run_tests.py"), "--quiet", "--only-disks",
-                             "--vm", os.path.join(work, "build", "winddroid-vm"), "--timeout", "120"], work)
-                if u.returncode != 0 or t.returncode != 0 or i.returncode != 0 or (f is not None and f.returncode != 0):
-                    print(f"KILL  {desc}")
-                else:
-                    print(f"ALIVE {desc}  <-- not detected")
+        works = []
+        for w in range(workers):
+            work = os.path.join(tmp, f"src{w}")
+            shutil.copytree(ROOT, work, ignore=shutil.ignore_patterns(".git", "apk", "build", "ext"))
+            works.append(work)
+        free = list(works)
+        import threading
+        lock = threading.Lock()
+
+        def job(mutant):
+            with lock:
+                work = free.pop()
+            try:
+                return check_one(mutant, work, guests)
+            finally:
+                with lock:
+                    free.append(work)
+
+        chosen = [mu for mu in MUTANTS if len(sys.argv) < 2 or any(k in mu[0] for k in sys.argv[1:])]
+        with concurrent.futures.ThreadPoolExecutor(workers) as ex:
+            for desc, line, alive in ex.map(job, chosen):
+                print(line, flush=True)
+                if alive:
                     survived.append(desc)
-            open(fpath, "w").write(orig)
-    print(f"{len(MUTANTS) - len(survived)}/{len(MUTANTS)} injected bugs detected")
-    return 1 if survived else 0
+        print(f"{len(chosen) - len(survived)}/{len(chosen)} injected bugs detected")
+        return 1 if survived else 0
 
 
 if __name__ == "__main__":

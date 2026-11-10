@@ -61,6 +61,8 @@ typedef struct {
 /* ---------------------------------------------------------------- GIC */
 
 #define GIC_NIRQ 96          /* 32 private + 64 SPIs */
+#define GIC_LPI_BASE 8192
+#define GIC_NLPI 8192        /* GICD_TYPER.IDbits = 13 */
 
 typedef struct {
     uint32_t dctlr;
@@ -81,7 +83,27 @@ typedef struct {
     uint8_t ap_prio[32];         /* stack of active priorities */
     uint16_t ap_id[32];
     int ap_n;
+    /* LPIs (INTID 8192 .. 8192 + GIC_NLPI - 1), delivered through the ITS */
+    uint32_t rctlr;              /* GICR_CTLR: EnableLPIs */
+    uint64_t propbaser, pendbaser;
+    uint8_t lpi_pend[GIC_NLPI];
+    int lpi_npend;
 } wd_gic;
+
+/* ---------------------------------------------------------------- ITS */
+
+typedef struct { uint32_t devid, eventid, pintid; uint16_t icid; } wd_its_map;
+
+typedef struct {
+    uint32_t ctlr;
+    uint64_t cbaser, cwriter, creadr;
+    uint64_t baser[8];
+    struct { uint32_t devid; uint8_t size; } dev[256];
+    int ndev;
+    wd_its_map *map;
+    int nmap, cap;
+    uint8_t coll_valid[256];
+} wd_its;
 
 /* ---------------------------------------------------------------- UART */
 
@@ -167,6 +189,11 @@ struct wd_pcidev {
     void (*on_cfg_write)(struct wd_machine *m, wd_pcidev *d, uint32_t off, int size, uint32_t val);
     void (*on_free)(wd_pcidev *d);
     void *opaque;
+    /* MSI-X (wd_pci_msix_init) */
+    int msix_cap, msix_n, msix_bar;
+    uint32_t msix_table_off, msix_pba_off;
+    uint8_t *msix_table;         /* msix_n entries of 16 bytes */
+    uint64_t msix_pba[2];        /* up to 128 vectors */
 };
 
 /* ---------------------------------------------------------------- machine */
@@ -174,6 +201,7 @@ struct wd_pcidev {
 struct wd_machine {
     wd_cpu cpu;
     wd_gic gic;
+    wd_its its;
     wd_uart uart;
 
     uint8_t *ram;
@@ -288,6 +316,9 @@ int wd_dma_write(wd_machine *m, uint64_t pa, const void *buf, size_t len);
 void wd_pci_add(wd_machine *m, wd_pcidev *d);
 void wd_pci_host_init(wd_machine *m);
 int wd_pci_free_slot(wd_machine *m);
+int wd_pci_msix_init(wd_pcidev *d, int nvec, int bar, uint32_t table_off, uint32_t pba_off);
+int wd_pci_msix_enabled(const wd_pcidev *d);
+void wd_pci_msix_notify(wd_machine *m, wd_pcidev *d, int vector);
 void wd_pci_add_std_caps(wd_pcidev *d);
 int wd_phys_is_ram(wd_machine *m, uint64_t pa);
 
@@ -305,6 +336,13 @@ void wd_gic_dir(wd_machine *m, uint32_t id);
 uint64_t wd_gic_hppir(wd_machine *m);
 uint64_t wd_gic_rpr(wd_machine *m);
 void wd_gic_sgi(wd_machine *m, uint64_t val);
+void wd_gic_set_lpi(wd_machine *m, uint32_t intid);
+/* its.c */
+uint64_t wd_its_read(wd_machine *m, uint64_t off, int size);
+void wd_its_write(wd_machine *m, uint64_t off, int size, uint64_t val);
+void wd_its_free(wd_machine *m);
+/* MSI write from a PCI function (requester ID = bus:dev.fn) */
+void wd_msi_write(wd_machine *m, uint32_t requester, uint64_t addr, uint32_t data);
 
 void wd_uart_reset(wd_uart *u);
 uint64_t wd_uart_read(wd_machine *m, uint64_t off);

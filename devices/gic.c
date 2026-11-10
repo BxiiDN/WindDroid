@@ -1,7 +1,8 @@
 /*
- * WindDroid - GICv3 (single CPU, single security state, no LPIs/ITS).
- * Distributor at WD_GICD_BASE, one redistributor at WD_GICR_BASE,
- * CPU interface through the ICC_* system registers.
+ * WindDroid - GICv3 (single CPU, single security state) with physical
+ * LPIs. Distributor at WD_GICD_BASE, one redistributor at WD_GICR_BASE,
+ * CPU interface through the ICC_* system registers; LPIs are made pending
+ * by the ITS (its.c) and configured through the LPI property table.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -33,10 +34,21 @@ static int running_prio(const wd_gic *g)
     return g->ap_n ? g->ap_prio[g->ap_n - 1] : 0xFF;
 }
 
+/* LPI configuration byte from the property table in guest memory: priority[7:2], enable[0] */
+static int lpi_config(wd_machine *m, int n)
+{
+    wd_gic *g = &m->gic;
+    int idbits = (int)(g->propbaser & 0x1F) + 1;
+    if (GIC_LPI_BASE + n >= (1 << idbits) || idbits < 14) return 0;
+    uint8_t *p = wd_phys_host(m, (g->propbaser & 0x000FFFFFFFFFF000ULL) + (uint64_t)n);
+    return p ? *p : 0;
+}
+
 /* Highest priority pending interrupt that passes the masks; -1 if none.
  * grp: 0, 1 or -1 for either group. */
-static int hppi(const wd_gic *g, int grp, int apply_masks)
+static int hppi(wd_machine *m, int grp, int apply_masks)
 {
+    const wd_gic *g = &m->gic;
     int best = -1, bp = 0x100;
     for (int i = 0; i < GIC_NIRQ; i++) {
         if (!g->enabled[i] || !pending(g, i) || g->active[i]) continue;
@@ -44,6 +56,16 @@ static int hppi(const wd_gic *g, int grp, int apply_masks)
         if (!group_on(g, i)) continue;
         int p = g->prio[i] & PRIO_MASK;
         if (p < bp) { bp = p; best = i; }
+    }
+    /* LPIs: always group 1, edge, no active state */
+    if (g->lpi_npend && (g->rctlr & 1) && grp != 0 && (g->dctlr & 2) && g->igrpen1) {
+        for (int n = 0; n < GIC_NLPI; n++) {
+            if (!g->lpi_pend[n]) continue;
+            int cfg = lpi_config(m, n);
+            if (!(cfg & 1)) continue;
+            int p = cfg & 0xFC & PRIO_MASK;
+            if (p < bp) { bp = p; best = GIC_LPI_BASE + n; }
+        }
     }
     if (best >= 0 && apply_masks) {
         if (bp >= g->pmr || bp >= running_prio(g)) return -1;
@@ -53,12 +75,21 @@ static int hppi(const wd_gic *g, int grp, int apply_masks)
 
 int wd_gic_irq_pending(wd_machine *m)
 {
-    return hppi(&m->gic, -1, 1) >= 0;
+    return hppi(m, -1, 1) >= 0;
 }
 
 int wd_gic_any_pending(wd_machine *m)
 {
-    return hppi(&m->gic, -1, 1) >= 0;
+    return hppi(m, -1, 1) >= 0;
+}
+
+void wd_gic_set_lpi(wd_machine *m, uint32_t intid)
+{
+    wd_gic *g = &m->gic;
+    if (intid < GIC_LPI_BASE || intid >= GIC_LPI_BASE + GIC_NLPI) return;
+    uint8_t *p = &g->lpi_pend[intid - GIC_LPI_BASE];
+    if (!*p) { *p = 1; g->lpi_npend++; }
+    m->irq_dirty = 1;
 }
 
 void wd_gic_set_line(wd_machine *m, int irq, int level)
@@ -74,12 +105,20 @@ void wd_gic_set_line(wd_machine *m, int irq, int level)
 static uint64_t ack(wd_machine *m, int grp)
 {
     wd_gic *g = &m->gic;
-    int i = hppi(g, grp, 1);
+    int i = hppi(m, grp, 1);
     if (i < 0) return SPURIOUS;
-    g->latch[i] = 0;
-    g->active[i] = 1;
+    int prio;
+    if (i >= GIC_LPI_BASE) {
+        g->lpi_pend[i - GIC_LPI_BASE] = 0;
+        g->lpi_npend--;
+        prio = lpi_config(m, i - GIC_LPI_BASE) & 0xFC & PRIO_MASK;
+    } else {
+        g->latch[i] = 0;
+        g->active[i] = 1;
+        prio = g->prio[i] & PRIO_MASK;
+    }
     if (g->ap_n < 32) {
-        g->ap_prio[g->ap_n] = g->prio[i] & PRIO_MASK;
+        g->ap_prio[g->ap_n] = (uint8_t)prio;
         g->ap_id[g->ap_n] = (uint16_t)i;
         g->ap_n++;
     }
@@ -95,7 +134,7 @@ uint64_t wd_gic_iar(wd_machine *m)
 
 uint64_t wd_gic_hppir(wd_machine *m)
 {
-    int i = hppi(&m->gic, -1, 0);
+    int i = hppi(m, -1, 0);
     return i < 0 ? SPURIOUS : (uint64_t)i;
 }
 
@@ -113,7 +152,7 @@ void wd_gic_dir(wd_machine *m, uint32_t id)
 void wd_gic_eoi(wd_machine *m, uint32_t id)
 {
     wd_gic *g = &m->gic;
-    if (id >= GIC_NIRQ) return;
+    if (id >= GIC_NIRQ && (id < GIC_LPI_BASE || id >= GIC_LPI_BASE + GIC_NLPI)) return;
     for (int k = g->ap_n - 1; k >= 0; k--) {
         if (g->ap_id[k] == id) {
             memmove(&g->ap_prio[k], &g->ap_prio[k + 1], (size_t)(g->ap_n - k - 1));
@@ -122,7 +161,7 @@ void wd_gic_eoi(wd_machine *m, uint32_t id)
             break;
         }
     }
-    if (!(g->ctlr & 2)) g->active[id] = 0;      /* EOImode == 0: drop and deactivate */
+    if (id < GIC_NIRQ && !(g->ctlr & 2)) g->active[id] = 0;   /* EOImode == 0: drop and deactivate */
     m->irq_dirty = 1;
 }
 
@@ -257,7 +296,7 @@ uint64_t wd_gicd_read(wd_machine *m, uint64_t off, int size)
     off &= ~3ULL;
     switch (off) {
     case 0x0000: return (g->dctlr & 3) | 0x10 | 0x40;
-    case 0x0004: return (9u << 19) | (GIC_NIRQ / 32 - 1);
+    case 0x0004: return (13u << 19) | (1u << 17) | (GIC_NIRQ / 32 - 1);   /* IDbits 14, LPIS */
     case 0x0008: return 0x0000043B;
     case 0x000C: case 0x0010: return 0;
     case 0xFFE8: return 0x3B;
@@ -300,13 +339,17 @@ uint64_t wd_gicr_read(wd_machine *m, uint64_t off, int size)
         if (common_read(g, o & ~3ULL, 0, 32, &v)) return v;
         return 0;
     }
-    if (off == 0x0008) {                      /* GICR_TYPER: Last, processor 0 */
-        return size == 8 ? 0x10 : 0x10;
+    if (off == 0x0008) {                      /* GICR_TYPER: Last, processor 0, physical LPIs */
+        return 0x11;
     }
     if (off == 0x000C) return 0;
+    if (off == 0x0070) return size == 8 ? g->propbaser : (uint32_t)g->propbaser;
+    if (off == 0x0074) return g->propbaser >> 32;
+    if (off == 0x0078) return size == 8 ? g->pendbaser : (uint32_t)g->pendbaser;
+    if (off == 0x007C) return g->pendbaser >> 32;
     if (size == 8) return wd_gicr_read(m, off, 4) | (wd_gicr_read(m, off + 4, 4) << 32);
     switch (off & ~3ULL) {
-    case 0x0000: return 0;                    /* GICR_CTLR */
+    case 0x0000: return g->rctlr & 1;          /* GICR_CTLR: EnableLPIs, RWP = 0 */
     case 0x0004: return 0x0000043B;           /* GICR_IIDR */
     case 0x0014: return g->rwaker;
     case 0xFFE8: return 0x3B;
@@ -328,5 +371,18 @@ void wd_gicr_write(wd_machine *m, uint64_t off, int size, uint64_t val)
     if ((off & ~3ULL) == 0x0014) {
         uint32_t sleep = (uint32_t)val & 2;
         g->rwaker = sleep | (sleep ? 4 : 0);
+    }
+    if (off == 0x0000) {
+        /* EnableLPIs: once set it cannot be cleared on this implementation (GICR_CTLR.EnableLPIs is RES1 after enable is allowed) */
+        if (val & 1) g->rctlr |= 1;
+        m->irq_dirty = 1;
+    }
+    if (!(g->rctlr & 1)) {                    /* the tables can only change while LPIs are disabled */
+        uint64_t mask70 = 0x000FFFFFFFFFF000ULL | 0x1F | (7ULL << 7) | (3ULL << 10) | (7ULL << 56);
+        uint64_t mask78 = 0x000FFFFFFFFF0000ULL | (7ULL << 7) | (3ULL << 10) | (7ULL << 56) | (1ULL << 62);
+        if (off == 0x0070) g->propbaser = (size == 8 ? val : (g->propbaser & ~0xFFFFFFFFULL) | (uint32_t)val) & mask70;
+        if (off == 0x0074) g->propbaser = ((g->propbaser & 0xFFFFFFFFULL) | (val << 32)) & mask70;
+        if (off == 0x0078) g->pendbaser = (size == 8 ? val : (g->pendbaser & ~0xFFFFFFFFULL) | (uint32_t)val) & mask78 & ~(1ULL << 62);
+        if (off == 0x007C) g->pendbaser = ((g->pendbaser & 0xFFFFFFFFULL) | (val << 32)) & mask78 & ~(1ULL << 62);
     }
 }

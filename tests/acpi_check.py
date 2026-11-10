@@ -82,7 +82,7 @@ def main():
             if s != "DSDT":
                 errors.append("FADT.X_DSDT does not point to the DSDT")
             found["DSDT"] = dsdt
-        for want in ("FACP", "APIC", "GTDT", "MCFG", "SPCR", "DBG2", "DSDT"):
+        for want in ("FACP", "APIC", "GTDT", "MCFG", "SPCR", "DBG2", "DSDT", "IORT"):
             if want not in found:
                 errors.append(f"{want} missing")
         madt = found.get("APIC", b"")
@@ -90,8 +90,41 @@ def main():
         while p < len(madt):
             kinds.append((madt[p], madt[p + 1]))
             p += madt[p + 1]
-        if p != len(madt) or (0xB, 80) not in kinds or (0xC, 24) not in kinds or (0xE, 16) not in kinds:
+        if p != len(madt) or (0xB, 80) not in kinds or (0xC, 24) not in kinds or (0xE, 16) not in kinds \
+                or (0xF, 20) not in kinds:
             errors.append(f"MADT structures wrong: {kinds}")
+        p = 44
+        while p < len(madt):
+            if madt[p] == 0xF and struct.unpack_from("<IQ", madt, p + 4) != (0, 0x08080000):
+                errors.append("MADT GIC ITS entry wrong")
+            p += madt[p + 1]
+        # IORT (ARM DEN 0049): ITS group + root complex mapping all requester IDs to the ITS
+        iort = found.get("IORT", b"")
+        if len(iort) >= 48:
+            count, first = struct.unpack_from("<II", iort, 36)
+            nodes, q = {}, first
+            for _ in range(count):
+                typ, ln, rev = struct.unpack_from("<BHB", iort, q)
+                nodes[q] = (typ, iort[q:q + ln])
+                q += ln
+            if q != len(iort):
+                errors.append("IORT node lengths do not add up")
+            its = [o for o, (t, _) in nodes.items() if t == 0]
+            rc = [b for t, b in nodes.values() if t == 2]
+            if len(its) != 1 or struct.unpack_from("<II", nodes[its[0]][1], 16) != (1, 0):
+                errors.append("IORT ITS group node wrong")
+            if len(rc) != 1:
+                errors.append("IORT root complex node missing")
+            else:
+                nmap, ref = struct.unpack_from("<II", rc[0], 8)
+                cca, hints, _, flags = struct.unpack_from("<IBHB", rc[0], 16)
+                seg = struct.unpack_from("<I", rc[0], 28)[0]
+                ib, num, ob, oref, mflags = struct.unpack_from("<IIIII", rc[0], ref)
+                if nmap != 1 or cca != 1 or flags != 3 or seg != 0 or (ib, num, ob, mflags) != (0, 0xFFFF, 0, 0) \
+                        or oref != its[0]:
+                    errors.append("IORT root complex mapping wrong")
+        else:
+            errors.append("IORT too short")
         mcfg = found.get("MCFG", b"")
         if len(mcfg) >= 60:
             base_ecam, seg, b0, b1 = struct.unpack_from("<QHBB", mcfg, 44)

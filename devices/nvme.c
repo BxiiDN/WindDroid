@@ -115,6 +115,7 @@ static void complete(wd_machine *m, nvme_ctrl *c, int sqid, uint16_t cid, uint32
     st16(e + 14, (uint16_t)((status << 1) | (q->phase & 1)));
     wd_dma_write(m, q->base + (uint64_t)q->tail * 16, e, 16);
     if (++q->tail == q->size) { q->tail = 0; q->phase ^= 1; }
+    if (q->ien && wd_pci_msix_enabled(&c->pci)) wd_pci_msix_notify(m, &c->pci, q->iv);
 }
 
 /* ---------------------------------------------------------------- admin commands */
@@ -198,6 +199,7 @@ static uint16_t admin(wd_machine *m, nvme_ctrl *c, const uint8_t *cmd, uint32_t 
         q->phase = 1;
         q->ien = (cdw11 >> 1) & 1;
         q->iv = (uint16_t)(cdw11 >> 16);
+        if (q->iv >= NVME_MAXQ) return 0x108;                     /* invalid interrupt vector */
         q->valid = 1;
         return SC_OK;
     }
@@ -477,6 +479,7 @@ int wd_attach_nvme(wd_machine *m, const wd_disk *disk)
     wd_pci_set_bar(&c->pci, 0, 0x4000, WD_BAR_MEM64);
     c->pci.cfg[0x3D] = 1;                                     /* INTA */
     wd_pci_add_std_caps(&c->pci);
+    if (wd_pci_msix_init(&c->pci, NVME_MAXQ, 0, 0x2000, 0x3000)) { free(c->bounce); free(c); return -1; }
     c->pci.opaque = c;
     c->pci.bar_read = reg_read;
     c->pci.bar_write = reg_write;

@@ -121,6 +121,7 @@ uint64_t wd_phys_read(wd_machine *m, uint64_t pa, int size)
     }
     if (in(pa, WD_GICD_BASE, 0x10000)) return wd_gicd_read(m, pa - WD_GICD_BASE, size);
     if (in(pa, WD_GICR_BASE, 0x20000)) return wd_gicr_read(m, pa - WD_GICR_BASE, size);
+    if (in(pa, WD_GITS_BASE, 0x20000)) return wd_its_read(m, pa - WD_GITS_BASE, size);
     if (in(pa, WD_UART_BASE, 0x1000)) return wd_uart_read(m, (pa - WD_UART_BASE) & ~3ULL);
     if (in(pa, WD_RTC_BASE, 0x1000)) return wd_rtc_read(m, (pa - WD_RTC_BASE) & ~3ULL);
     if (in(pa, WD_FWCFG_BASE, 0x18)) return wd_fwcfg_read(m, &m->fwcfg, pa - WD_FWCFG_BASE, size);
@@ -142,6 +143,7 @@ void wd_phys_write(wd_machine *m, uint64_t pa, int size, uint64_t val)
     }
     if (in(pa, WD_GICD_BASE, 0x10000)) { wd_gicd_write(m, pa - WD_GICD_BASE, size, val); return; }
     if (in(pa, WD_GICR_BASE, 0x20000)) { wd_gicr_write(m, pa - WD_GICR_BASE, size, val); return; }
+    if (in(pa, WD_GITS_BASE, 0x20000)) { wd_its_write(m, pa - WD_GITS_BASE, size, val); return; }
     if (in(pa, WD_UART_BASE, 0x1000)) { wd_uart_write(m, (pa - WD_UART_BASE) & ~3ULL, val); return; }
     if (in(pa, WD_RTC_BASE, 0x1000)) { wd_rtc_write(m, (pa - WD_RTC_BASE) & ~3ULL, val); return; }
     if (in(pa, WD_FWCFG_BASE, 0x18)) { wd_fwcfg_write(m, &m->fwcfg, pa - WD_FWCFG_BASE, size, val); return; }

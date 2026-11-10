@@ -80,6 +80,7 @@ typedef struct {
     uint32_t er_seg_size, er_seg, er_idx;
     int er_pcs;
     int er_full;
+    int er_used;                 /* events written since the ring was set up */
     xhci_port port[NPORTS];
     xhci_slot slot[NSLOTS + 1];
     uint8_t *buf;                /* one TD */
@@ -116,6 +117,27 @@ static void update_irq(xhci *x)
     wd_pci_set_intx(x->m, &x->pci, level);
 }
 
+/* Assert the interrupter: IP for INTx, or an MSI-X message (which clears IP, xHCI 5.5.2.1). */
+static void raise_irq(xhci *x)
+{
+    x->erdp |= 8;                                    /* event handler busy */
+    x->iman |= 1;                                    /* interrupt pending */
+    x->usbsts |= 8;                                  /* EINT */
+    if (wd_pci_msix_enabled(&x->pci)) {
+        if ((x->iman & 2) && (x->usbcmd & 4)) {
+            wd_pci_msix_notify(x->m, &x->pci, 0);
+            x->iman &= ~1u;
+        }
+        return;
+    }
+    update_irq(x);
+}
+
+static uint64_t er_enqueue(const xhci *x)
+{
+    return x->er_seg_base + (uint64_t)x->er_idx * 16;
+}
+
 static void event(xhci *x, uint64_t param, uint32_t status, uint32_t control)
 {
     if (!x->erstsz || x->er_full || (x->usbsts & 1)) return;
@@ -147,6 +169,7 @@ static void event(xhci *x, uint64_t param, uint32_t status, uint32_t control)
         wr32le(e + 12, (control & ~1u) | (uint32_t)x->er_pcs);
     }
     wd_dma_write(x->m, cur, e, 16);
+    x->er_used = 1;
     x->er_idx++;
     if (x->er_idx >= x->er_seg_size) {
         x->er_idx = 0;
@@ -158,10 +181,8 @@ static void event(xhci *x, uint64_t param, uint32_t status, uint32_t control)
             x->er_seg_size = rd32le(ent + 8) & 0xFFFF;
         }
     }
-    x->erdp |= 8;                                    /* event handler busy */
-    x->iman |= 1;                                    /* interrupt pending */
-    x->usbsts |= 8;                                  /* EINT */
-    update_irq(x);
+    /* no new interrupt while the guest is still handling the previous one (EHB set) */
+    if (!(x->erdp & 8)) raise_irq(x);
 }
 
 static void er_setup(xhci *x)
@@ -170,6 +191,7 @@ static void er_setup(xhci *x)
     x->er_idx = 0;
     x->er_pcs = 1;
     x->er_full = 0;
+    x->er_used = 0;
     uint8_t ent[16];
     if (x->erstsz && !wd_dma_read(x->m, x->erstba, ent, 16)) {
         x->er_seg_base = (rd32le(ent) | (uint64_t)rd32le(ent + 4) << 32) & ~63ULL;
@@ -865,6 +887,10 @@ static void reg_write(wd_machine *m, wd_pcidev *d, int bar, uint64_t off, int si
         case 0x00:
             x->iman = (x->iman & ~(v & 1u)) & ~2u;
             x->iman |= v & 2u;
+            if (wd_pci_msix_enabled(&x->pci) && (x->iman & 1) && (x->iman & 2) && (x->usbcmd & 4)) {
+                wd_pci_msix_notify(x->m, &x->pci, 0);
+                x->iman &= ~1u;
+            }
             update_irq(x);
             break;
         case 0x04: x->imod = v; break;
@@ -876,6 +902,8 @@ static void reg_write(wd_machine *m, wd_pcidev *d, int bar, uint64_t off, int si
             uint64_t ehb = (x->erdp & 8) && !(v & 8) ? 8 : 0;       /* EHB is RW1C */
             x->erdp = nv | ehb;
             x->er_full = 0;
+            /* events the guest has not consumed yet interrupt again once EHB is clear */
+            if (!ehb && x->er_used && (nv & ~15ULL) != er_enqueue(x) && x->erstsz) raise_irq(x);
             break;
         }
         case 0x1C: x->erdp = (x->erdp & 0xFFFFFFFFULL) | (uint64_t)v << 32; break;
@@ -927,6 +955,7 @@ static xhci *get_xhci(wd_machine *m, int create)
     x->pci.cfg[0x60] = 0x30;                     /* SBRN: USB 3.0 */
     x->pci.cfg[0x61] = 0x20;                     /* FLADJ */
     wd_pci_add_std_caps(&x->pci);
+    if (wd_pci_msix_init(&x->pci, 1, 0, 0x3800, 0x3C00)) { free(x->buf); free(x); return NULL; }
     x->pci.opaque = x;
     x->pci.bar_read = reg_read;
     x->pci.bar_write = reg_write;
