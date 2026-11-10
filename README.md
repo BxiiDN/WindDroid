@@ -4,13 +4,13 @@ Mesin virtual **AArch64** yang ditulis dari nol untuk Android, dengan tujuan men
 
 Pendekatannya sama dengan [Henge](https://github.com/Leviidev/Henge) (macOS di iPhone/iPad): aplikasi Android tidak boleh memakai hypervisor (EL2 sudah dipakai firmware Qualcomm), jadi WindDroid membawa CPU, MMU, dan perangkatnya sendiri. Peta memori dan perangkatnya mengikuti mesin `virt` milik QEMU, konfigurasi yang dipakai orang untuk menjalankan Windows 11 ARM64 di QEMU (UEFI EDK2, `ramfb`, xHCI dengan keyboard/tablet USB, ISO lewat USB, NVMe).
 
-> **Status jujur (v0.2.0):** firmware UEFI asli (EDK2) sudah boot penuh di dalam WindDroid: menu boot, Setup, UEFI Shell, membaca/menulis disk NVMe dan USB, boot dari ISO lewat USB DVD, layar GOP, keyboard USB. Tabel ACPI, ITS/MSI-X, dan perangkat yang dibutuhkan Windows sudah ada dan diuji. **Boot Windows sendiri belum pernah diuji** (installer Windows tidak tersedia di lingkungan pengembangan), dan interpreter saat ini (±100 juta instruksi/detik) terlalu lambat untuk Windows yang nyaman dipakai. Itu butuh JIT; lihat [Peta jalan](#peta-jalan).
+> **Status jujur (v0.2.0):** firmware UEFI asli (EDK2) sudah boot penuh di dalam WindDroid: menu boot, Setup, UEFI Shell, membaca/menulis disk NVMe dan USB, boot dari ISO lewat USB DVD, layar GOP, keyboard USB. Tabel ACPI, ITS/MSI-X, dan perangkat yang dibutuhkan Windows sudah ada dan diuji. **Boot Windows sendiri belum pernah diuji** (installer Windows tidak tersedia di lingkungan pengembangan). Di ARM64 (tablet Android) blok instruksi diterjemahkan langsung ke kode mesin (**JIT**, ±300 juta instruksi/detik di server ARM64, 2,4× interpreter); itu masih jauh dari kecepatan asli, jadi Windows akan lambat. Lihat [Peta jalan](#peta-jalan).
 
 ## Isi repo
 
 | Folder | Isi |
 |---|---|
-| `core/` | Interpreter CPU A64 (integer, FP, AdvSIMD), MMU stage 1 + TLB, register sistem |
+| `core/` | Interpreter CPU A64 (integer, FP, AdvSIMD), **JIT AArch64→AArch64**, MMU stage 1 + TLB, register sistem |
 | `devices/` | GICv3 + ITS, PL011, PL031, flash CFI, fw_cfg, PCIe (ECAM, MSI-X), ramfb, NVMe, xHCI + HID + mass storage, image disk |
 | `host/` | Bus fisik, device tree, tabel ACPI, PSCI, timer, run loop, CLI `winddroid-vm` |
 | `include/` | API publik engine (`winddroid.h`) |
@@ -51,7 +51,9 @@ Pendekatannya sama dengan [Henge](https://github.com/Leviidev/Henge) (macOS di i
 | Disk | UEFI Shell boot dari NVMe (raw dan VHDX), salin file 3 MB, tulis file, mode read-only; boot ISO bergaya Windows dari USB DVD; baca/tulis USB disk |
 | Image | sampel asli Hyper-V/Virtual PC/Disk2VHD (dari qemu-iotests), log kotor Hyper-V, uji acak vs cermin RAM, struktur VHDX dicek parser Python independen |
 
-**Uji mutasi** (`tests/mutation_test.py`): **52 bug** disuntikkan satu per satu (CPU, FP, SIMD, VHDX, VHD, USB, NVMe, xHCI, ITS, MSI-X). Semuanya tertangkap.
+**JIT** (`core/jit.c`, aktif otomatis di host ARM64): semua tes di atas juga dijalankan dengan JIT di runner ARM64 asli, termasuk boot EDK2, UEFI Shell dari NVMe/USB, dan kode yang memodifikasi dirinya sendiri; `tests/jit_diff.py` membandingkan checksum state per instruksi antara interpreter dan JIT.
+
+**Uji mutasi** (`tests/mutation_test.py`): **64 bug** disuntikkan satu per satu (CPU, jalur cepat, FP, SIMD, VHDX, VHD, USB, NVMe, xHCI, ITS, MSI-X, dan JIT di ARM64). Semuanya harus tertangkap sebelum rilis.
 
 ## Membangun
 
@@ -82,7 +84,7 @@ File dibuka lewat pemilih file Android (deskriptor file), jadi image puluhan GB 
 ## Peta jalan
 
 1. ~~FP/AdvSIMD~~, ~~UEFI + fw_cfg + ACPI~~, ~~NVMe~~, ~~ramfb~~, ~~xHCI + keyboard/tablet/storage~~, ~~ITS + MSI-X~~
-2. **Kecepatan**: cache blok terdekode, lalu **JIT arm64→arm64** seperti Henge (diperlukan agar Windows layak dipakai)
+2. ~~JIT arm64→arm64 dasar~~ (instruksi integer, load/store, cabang). Berikutnya: akses memori inline, rantai blok, FP/SIMD di JIT
 3. **Multi-core (SMP)**
 4. **Jaringan** (USB NCM, driver bawaan Windows) dengan NAT di dalam aplikasi
 5. GPU yang lebih cepat dari ramfb, EL2

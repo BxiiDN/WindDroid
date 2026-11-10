@@ -6,14 +6,15 @@
 - **Disk sistem NVMe** dari file **VHDX**, VHD, atau IMG (misalnya VHDX Windows 11 ARM64 dari Microsoft) — tidak dimuat ke RAM
 - **ISO installer** sebagai **USB DVD** (boot El Torito seperti media Windows)
 - **Buat disk baru**: VHDX dinamis 32–256 GB
+- **JIT ARM64→ARM64**: di tablet ARM64 blok instruksi diterjemahkan ke kode mesin, ±2,4× lebih cepat dari interpreter
 - CPU: FP dan AdvSIMD (NEON) lengkap; GICv3 ITS + MSI-X; tabel ACPI termasuk IORT
 - RAM VM 1–8 GB
 
 ### Pengujian
-Semua tes dijalankan ulang di GitHub Actions (x86-64 dan ARM64 asli) lalu APK ini dipasang di emulator Android 14: aplikasi mem-boot EDK2, menampilkan layar 800×600, dan keyboard USB membuka menu boot. Rinciannya di README (108.000+ vektor FP/SIMD, tes firmware dengan UEFI Shell, sampel VHDX asli Hyper-V, 52/52 bug suntikan tertangkap).
+Semua tes dijalankan ulang di GitHub Actions (x86-64 dan ARM64 asli) lalu APK ini dipasang di emulator Android 14: aplikasi mem-boot EDK2, menampilkan layar 800×600, dan keyboard USB membuka menu boot. Rinciannya di README (108.000+ vektor FP/SIMD, tes firmware dengan UEFI Shell, sampel VHDX asli Hyper-V, JIT diuji di ARM64 asli, 64 bug suntikan harus tertangkap).
 
 ### Batasan
-- **Boot Windows sendiri belum diuji**, dan tanpa JIT kecepatannya sekitar 100 juta instruksi per detik: Windows akan sangat lambat (instalasi bisa berjam-jam) bila berhasil.
+- **Boot Windows sendiri belum diuji**. Dengan JIT kecepatannya sekitar 300 juta instruksi per detik (di server ARM64; tablet bisa lebih lambat), masih jauh dari kecepatan asli: Windows akan sangat lambat (instalasi bisa berjam-jam) bila berhasil.
 - Belum ada jaringan dan baru satu inti CPU.
 - Image VHDX/VHD diferensial (punya parent) belum didukung.
 
