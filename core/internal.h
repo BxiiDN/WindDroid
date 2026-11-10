@@ -506,6 +506,7 @@ static inline void wd_write(wd_machine *m, uint64_t va, int size, uint64_t val, 
 
 void wd_net_poll(wd_machine *m);
 int wd_peek_insn(wd_machine *m, uint64_t va, uint32_t *out);
+int wd_peek_u64(wd_machine *m, uint64_t va, uint64_t *out);
 size_t wd_xhci_diag(wd_machine *m, char *buf, size_t len);
 
 #endif

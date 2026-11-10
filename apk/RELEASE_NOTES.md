@@ -1,7 +1,7 @@
 ## WindDroid v0.3.2 — diagnosa boot Windows
 
 ### Baru di v0.3.2
-- Tombol **Diagnosa** di layar VM: membuat laporan teks (bagian kode yang sedang berputar beserta isinya, register CPU per inti, exception terakhir, status xHCI dan USB DVD/disk termasuk perintah SCSI terakhir). Laporan otomatis **disalin** dan bisa **dibagikan**: tempel ke chat/issue bila VM macet.
+- Tombol **Diagnosa** di layar VM: membuat laporan teks (bagian kode yang sedang berputar beserta isinya dan nama modulnya — driver firmware atau file boot Windows —, backtrace, register CPU per inti, exception terakhir, status xHCI dan USB DVD/disk termasuk perintah SCSI terakhir). Laporan otomatis **disalin** dan bisa **dibagikan**: tempel ke chat/issue bila VM macet.
 
 ### Dari v0.3.1
 - Bila firmware atau Windows menjalankan instruksi yang belum dikenali emulator, **Konsol** sekarang menampilkan `[WindDroid] undefined instruction … at pc=…`. Ini membantu mencari penyebab bila boot Windows berhenti di logo TianoCore. Kirim screenshot Konsol bila itu terjadi.

@@ -262,6 +262,16 @@ int wd_peek_insn(wd_machine *m, uint64_t va, uint32_t *out)
     return 0;
 }
 
+int wd_peek_u64(wd_machine *m, uint64_t va, uint64_t *out)
+{
+    walk_result r;
+    if ((va & 7) || walk(m, va, &r)) return -1;
+    uint8_t *h = wd_phys_host(m, (r.pa_page & OA_MASK) | (va & 0xFFF));
+    if (!h) return -1;
+    memcpy(out, h, 8);
+    return 0;
+}
+
 uint32_t wd_fetch(wd_machine *m, uint64_t va)
 {
     wd_cpu *c = &m->cpu;

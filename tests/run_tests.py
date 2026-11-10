@@ -31,7 +31,7 @@ TESTS = [
                                    capture_output=True, text=True).stdout.split("\n")[:3]),
     ("t_msi", ["-U", "-D", "{msidisk}"], ["msi: 0 failures"]),
     ("t_smp", ["-P", "4"], ["smp: 4 CPUs, counter=12000 atomic=12000, 0 failures"]),
-    ("t_smp", ["-P", "4", "-G"], ["diagnostics: 4 CPU", "cpu3 off", "hot code", "exceptions:"]),
+    ("t_smp", ["-P", "4", "-G"], ["diagnostics: 4 CPU", "cpu3 off", "hot code", "backtrace:", "exceptions:"]),
     ("t_net", ["-N", "-n", "40000000000", "-i", "{netports}"], ["tcp: 300000 bytes echoed", "tcp: slow reader got all 300000 bytes", "net: 0 failures"]),
     ("t_smp", ["-P", "4", "-X"], ["smp: 4 CPUs, counter=12000 atomic=12000, 0 failures"]),
     # the same programs through the general decoder only
