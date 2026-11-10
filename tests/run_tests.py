@@ -289,10 +289,13 @@ def main():
     ap.add_argument("--no-firmware", action="store_true")
     ap.add_argument("--only-disks", action="store_true", help="run only the UEFI disk and USB tests")
     ap.add_argument("--jit", action="store_true", help="run every machine with block translation (-J)")
+    ap.add_argument("--interp", action="store_true", help="run every machine without block translation (-j)")
     args = ap.parse_args()
+    global JIT_ARGS
     if args.jit:
-        global JIT_ARGS
         JIT_ARGS = ["-J"]
+    if args.interp:
+        JIT_ARGS = ["-j"]
 
     import atexit
     import shutil

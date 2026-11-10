@@ -148,8 +148,11 @@ uint64_t    wd_icount(wd_machine *m);
 uint64_t    wd_pc(wd_machine *m);
 const char *wd_error(wd_machine *m);
 void        wd_set_trace(wd_machine *m, int on);
-/* Engine options: "no_fast" (general decoder only). Returns 0 if known. */
+/* Engine options: "no_fast" (general decoder only), "jit" (block translation, on by
+ * default on AArch64 hosts). Returns 0 if the option is known and could be set. */
 int         wd_set_option(wd_machine *m, const char *name, int value);
+/* 1 if blocks are translated to host code (AArch64 host with executable memory). */
+int         wd_jit_active(wd_machine *m);
 void        wd_dump_state(wd_machine *m, char *buf, size_t len);
 
 #ifdef __cplusplus

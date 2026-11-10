@@ -98,6 +98,21 @@ MUTANTS = [
     ("fast: ADD immediate ignores LSL #12", "core/cpu.c",
      "        if ((insn >> 22) & 1) imm <<= 12;\n        uint64_t a = rn == 31 ? *wd_sp_ptr(c) : c->x[rn];",
      "        uint64_t a = rn == 31 ? *wd_sp_ptr(c) : c->x[rn];"),
+    # block translator (only meaningful on AArch64 hosts: run with MUTATION_JIT=1 there)
+    ("JIT: flags not written back", "core/jit.c",
+     "    if (writes_flags) store_nzcv(e);", "    ;"),
+    ("JIT: B.cond takes the inverted condition", "core/jit.c",
+     "(insn & 15) << 12 | (uint32_t)T0 << 5 | (uint32_t)T0);  /* csel */",
+     "((insn & 15) ^ 1) << 12 | (uint32_t)T0 << 5 | (uint32_t)T0);  /* csel */"),
+    ("JIT: CBZ/TBZ condition not inverted", "core/jit.c",
+     "        emit(e, w ^ (1u << 24));", "        emit(e, w);"),
+    ("JIT: changed code not detected", "core/jit.c",
+     "        if (b && b->n && memcmp(b->words, host, 4u * b->n)) b = NULL;", "        ;"),
+    ("JIT: pre/post-index writeback lost", "core/jit.c",
+     "            add_imm64(e, T0, T0, off);\n            str_x(e, T0, HC, rn == 31 ? sp_off : OFF_X(rn));\n        }\n        exit_check(e, pc + 4);\n        return 1;\n    }\n    /* load/store pair",
+     "            add_imm64(e, T0, T0, 0);\n            str_x(e, T0, HC, rn == 31 ? sp_off : OFF_X(rn));\n        }\n        exit_check(e, pc + 4);\n        return 1;\n    }\n    /* load/store pair"),
+    ("JIT: signed loads not extended", "core/jit.c",
+     "            if (sign) {\n                /* sxtb", "            if (0) {\n                /* sxtb"),
     # disk images
     ("VHDX: BAT index ignores sector bitmap entries", "devices/image.c",
      "    return block + block / v->chunk_ratio;", "    return block;"),
@@ -172,7 +187,8 @@ def check_one(mutant, work, guests):
         if u.returncode != 0:
             return desc, f"KILL  {desc}", False
         t = run([sys.executable, os.path.join(work, "tests", "run_tests.py"), "--quiet", "--no-firmware",
-                 "--vm", os.path.join(work, "build", "winddroid-vm"), "--guests", guests, "--timeout", "60"], work)
+                 "--vm", os.path.join(work, "build", "winddroid-vm"), "--guests", guests, "--timeout", "60"]
+                + (["--jit"] if os.environ.get("MUTATION_JIT") else []), work)
         if t.returncode != 0:
             return desc, f"KILL  {desc}", False
         i = run([sys.executable, os.path.join(work, "tests", "image_tests.py")], work)
@@ -213,6 +229,10 @@ def main():
                     free.append(work)
 
         chosen = [mu for mu in MUTANTS if len(sys.argv) < 2 or any(k in mu[0] for k in sys.argv[1:])]
+        if len(sys.argv) < 2:
+            # translator mutants only change behaviour on AArch64 hosts with the translator on
+            jit_run = bool(os.environ.get("MUTATION_JIT")) and os.uname().machine in ("aarch64", "arm64")
+            chosen = [mu for mu in chosen if mu[0].startswith("JIT:") == jit_run]
         with concurrent.futures.ThreadPoolExecutor(workers) as ex:
             for desc, line, alive in ex.map(job, chosen):
                 print(line, flush=True)

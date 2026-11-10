@@ -21,7 +21,7 @@
  *     -u FILE        attach a disk image as a USB disk ("ro:FILE" read-only)
  *     -U             attach a USB keyboard and a USB tablet
  *     -X             general instruction decoder only (no fast paths), for testing
- *     -J             translate blocks to host code (AArch64 hosts only)
+ *     -J             translate blocks to host code (default on AArch64 hosts; -j turns it off)
  *     -T             print a state checksum after every instruction / block (debugging)
  *     -K TEXT=INPUT  type INPUT on the USB keyboard once TEXT has appeared on the serial port
  *
@@ -126,7 +126,7 @@ int main(int argc, char **argv)
     int realtime = 0, trace = 0, quiet = 0, opt, interactive = 0;
     const char *input = NULL, *bios = NULL, *vars_path = NULL, *dtb_path = NULL, *fb_path = NULL, *acpi_dir = NULL;
 
-    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:IF:A:D:c:u:UK:XJT")) != -1) {
+    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:IF:A:D:c:u:UK:XJjT")) != -1) {
         switch (opt) {
         case 'm': ram_mb = strtoull(optarg, NULL, 0); break;
         case 'n': limit = strtoull(optarg, NULL, 0); break;
@@ -147,6 +147,7 @@ int main(int argc, char **argv)
         case 'U': usb_hid = 1; break;
         case 'X': no_fast = 1; break;
         case 'J': use_jit = 1; break;
+        case 'j': use_jit = -1; break;
         case 'T': trace = 2; break;
         case 'K': {
             char *eq = strchr(optarg, '=');
@@ -182,7 +183,8 @@ int main(int argc, char **argv)
     wd_set_uart_tx(m, tx, NULL);
     wd_set_trace(m, trace);
     if (no_fast) wd_set_option(m, "no_fast", 1);
-    if (use_jit && wd_set_option(m, "jit", 1)) fprintf(stderr, "winddroid-vm: JIT not available on this host\n");
+    if (use_jit > 0 && wd_set_option(m, "jit", 1)) fprintf(stderr, "winddroid-vm: JIT not available on this host\n");
+    if (use_jit < 0) wd_set_option(m, "jit", 0);
     if (bios) {
         size_t blen, vlen = 0;
         uint8_t *code = read_file(bios, &blen), *vars = NULL;

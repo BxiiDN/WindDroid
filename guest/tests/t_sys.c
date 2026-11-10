@@ -223,6 +223,22 @@ static void test_atomics(void)
     CHECK_EQ(r, 0xABC);
 }
 
+static uint32_t smc_buf[16] __attribute__((aligned(64)));
+
+/* code written at run time, then rewritten: the new instructions must run */
+static void test_self_modifying(void)
+{
+    typedef uint64_t (*fn)(uint64_t);
+    for (int round = 0; round < 3; round++) {
+        smc_buf[0] = 0x91000000u | ((uint32_t)(1 + round) << 10);  /* add x0, x0, #(1 + round) */
+        smc_buf[1] = 0xD65F03C0u;                                   /* ret */
+        __asm__ volatile("dc cvau, %0\n dsb ish\n ic ivau, %0\n dsb ish\n isb" :: "r"(smc_buf) : "memory");
+        uint64_t r = 0;
+        for (int k = 0; k < 4; k++) r = ((fn)(uintptr_t)smc_buf)(r);
+        CHECK_EQ(r, 4u * (1 + round));
+    }
+}
+
 static void test_tbz(void)
 {
     uint64_t hi = 1ULL << 40, lo = 1ULL << 8;
@@ -238,6 +254,7 @@ static void test_tbz(void)
 int main(void)
 {
     test_tbz();
+    test_self_modifying();
     test_exceptions();
     test_sysregs();
     test_atomics();

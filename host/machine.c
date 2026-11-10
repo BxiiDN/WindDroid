@@ -35,6 +35,7 @@ wd_machine *wd_create(const wd_config *cfg)
     wd_fwcfg_init(&m->fwcfg);
     wd_pci_host_init(m);
     wd_cpu_reset(m);
+    m->use_jit = wd_jit_available() && !getenv("WINDDROID_NO_JIT");
     return m;
 }
 

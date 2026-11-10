@@ -29,6 +29,7 @@ int wd_decode_bitmask(int sf, int N, int imms, int immr, uint64_t *out);
 
 #include <stddef.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #define CACHE_SIZE  (32u << 20)          /* host code */
@@ -527,11 +528,29 @@ static jit_state *jit_get(wd_machine *m)
     j = calloc(1, sizeof *j);
     if (!j) return NULL;
     m->jit = j;
-    /* two views of one memfd-like region: anonymous shared mapping mapped twice is not
-     * portable, so use a single RWX mapping where allowed, else give up */
+    /* one read-write-execute mapping where the system allows it; otherwise (W^X policies)
+     * a memfd mapped twice, writable and executable */
     void *p = mmap(NULL, CACHE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (p == MAP_FAILED) return NULL;
-    j->code = j->wcode = p;
+    if (p != MAP_FAILED) {
+        j->code = j->wcode = p;
+    } else {
+#ifdef SYS_memfd_create
+        int fd = (int)syscall(SYS_memfd_create, "winddroid-jit", 0);
+        if (fd < 0 || ftruncate(fd, CACHE_SIZE)) { if (fd >= 0) close(fd); return NULL; }
+        void *w = mmap(NULL, CACHE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        void *x = mmap(NULL, CACHE_SIZE, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
+        close(fd);
+        if (w == MAP_FAILED || x == MAP_FAILED) {
+            if (w != MAP_FAILED) munmap(w, CACHE_SIZE);
+            if (x != MAP_FAILED) munmap(x, CACHE_SIZE);
+            return NULL;
+        }
+        j->wcode = w;
+        j->code = x;
+#else
+        return NULL;
+#endif
+    }
     j->cap = CACHE_SIZE / 4;
     j->ok = 1;
     return j;
@@ -628,6 +647,8 @@ static block *translate(wd_machine *m, jit_state *j, uint64_t pc, const uint8_t 
     epilogue(&e);
     if (e.overflow) { b->n = 0; return b; }
     size_t words = (size_t)(e.p - start);
+    if (j->wcode != j->code)
+        __builtin___clear_cache((char *)(j->wcode + j->used), (char *)(j->wcode + j->used + words));
     __builtin___clear_cache((char *)(j->code + j->used), (char *)(j->code + j->used + words));
     b->fn = (block_fn)(void *)(j->code + j->used);
     j->used += words;
@@ -678,6 +699,7 @@ void wd_jit_free(wd_machine *m)
     jit_state *j = m->jit;
     if (!j) return;
     if (j->code) munmap(j->code, CACHE_SIZE);
+    if (j->wcode && j->wcode != j->code) munmap(j->wcode, CACHE_SIZE);
     free(j->pool);
     free(j);
     m->jit = NULL;
@@ -685,10 +707,17 @@ void wd_jit_free(wd_machine *m)
 
 int wd_jit_available(void) { return 1; }
 
+int wd_jit_active(wd_machine *m)
+{
+    jit_state *j = m->use_jit ? jit_get(m) : NULL;
+    return j != NULL;
+}
+
 #else
 
 uint64_t wd_jit_run(wd_machine *m, uint64_t max) { (void)m; (void)max; return 0; }
 void wd_jit_free(wd_machine *m) { (void)m; }
 int wd_jit_available(void) { return 0; }
+int wd_jit_active(wd_machine *m) { (void)m; return 0; }
 
 #endif
