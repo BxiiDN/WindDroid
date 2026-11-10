@@ -74,6 +74,7 @@ typedef struct {
     uint32_t *end;
     int overflow;
     unsigned icount_target, icount_done;  /* guest instructions to have counted before a helper call */
+    int mem_mode;                         /* fast TLB set: 0 EL0, 1 EL1, 2 EL1 with PAN */
 } emitter;
 
 static void emit(emitter *e, uint32_t w)
@@ -107,15 +108,20 @@ static void mov_imm(emitter *e, int d, uint64_t v)
 static void load_nzcv(emitter *e)  { ldr_w(e, T4, HC, OFF_NZCV); emit(e, 0xD51B4200u | T4); }   /* msr nzcv, x13 */
 static void store_nzcv(emitter *e) { emit(e, 0xD53B4200u | T4); str_w(e, T4, HC, OFF_NZCV); }  /* mrs x13, nzcv */
 
-static void call(emitter *e, const void *fn)
+/* count this instruction and the ones before it (a helper may raise a guest exception) */
+static void count(emitter *e)
 {
-    /* the helper may raise a guest exception: count this instruction and the ones before it */
     if (e->icount_target > e->icount_done) {
         ldr_x(e, 17, HC, OFF_ICOUNT);
         emit(e, 0x91000000u | (e->icount_target - e->icount_done) << 10 | 17u << 5 | 17u);   /* add x17, x17, #d */
         str_x(e, 17, HC, OFF_ICOUNT);
         e->icount_done = e->icount_target;
     }
+}
+
+static void call(emitter *e, const void *fn)
+{
+    count(e);
     mov_imm(e, 16, (uint64_t)(uintptr_t)fn);
     emit(e, 0xD63F0200u);                                                         /* blr x16 */
 }
@@ -336,15 +342,54 @@ static int tr_dp(emitter *e, uint32_t sp_off, uint32_t insn, uint64_t pc)
 
 /* ---------------------------------------------------------------- loads and stores */
 
-/* x0 = m, x1 = address, x2 = size, x3 = value */
+/* One access with the address in x12 (store value in x3, load result in x0): an inline
+ * lookup in the interpreter's fast TLB for aligned RAM accesses, the helper otherwise.
+ * x12 and x14 survive (x14 holds the first value of a load pair). */
+static void mem_access(emitter *e, int load, int size)
+{
+    static const uint32_t ld[4] = { 0x386969A0u, 0x786969A0u, 0xB86969A0u, 0xF86969A0u };   /* ldr* x0, [x13, x9] */
+    static const uint32_t st[4] = { 0x382969A3u, 0x782969A3u, 0xB82969A3u, 0xF82969A3u };   /* str* x3, [x13, x9] */
+    count(e);
+    uint32_t *to_slow[2];
+    int nslow = 0;
+    if (size > 1) {
+        emit(e, 0xF240019Fu | (uint32_t)(size == 2 ? 0 : size == 4 ? 1 : 2) << 10);         /* tst x12, #size-1 */
+        to_slow[nslow++] = e->p;
+        emit(e, 0x54000001u);                                                              /* b.ne slow */
+    }
+    emit(e, 0xD34CFD89u);                                                                  /* lsr x9, x12, #12 */
+    emit(e, 0x92401D2Au);                                                                  /* and x10, x9, #0xff */
+    size_t off = load ? offsetof(wd_machine, ftlb_r) : offsetof(wd_machine, ftlb_w);
+    off += (size_t)e->mem_mode * FTLB_SIZE * 16;
+    mov_imm(e, T2, (uint64_t)off);
+    emit(e, 0x8B0B028Bu);                                                                  /* add x11, x20, x11 */
+    emit(e, 0x8B0A116Bu);                                                                  /* add x11, x11, x10, lsl #4 */
+    ldr_x(e, T4, T2, 0);
+    emit(e, 0xEB0901BFu);                                                                  /* cmp x13, x9 */
+    to_slow[nslow++] = e->p;
+    emit(e, 0x54000001u);                                                                  /* b.ne slow */
+    ldr_x(e, T4, T2, 8);
+    emit(e, 0x92402D89u);                                                                  /* and x9, x12, #0xfff */
+    int lg = size == 1 ? 0 : size == 2 ? 1 : size == 4 ? 2 : 3;
+    emit(e, load ? ld[lg] : st[lg]);
+    uint32_t *to_done = e->p;
+    emit(e, 0x14000000u);                                                                  /* b done */
+    for (int i = 0; i < nslow; i++) *to_slow[i] |= (uint32_t)((e->p - to_slow[i]) & 0x7FFFF) << 5;
+    emit(e, 0xA9BF3BECu);                                                                  /* stp x12, x14, [sp, #-16]! */
+    mov_reg(e, 1, T3);
+    mov_reg(e, 0, HM);
+    mov_imm(e, 2, (uint64_t)size);
+    call(e, load ? (const void *)h_load : (const void *)h_store);
+    emit(e, 0xA8C13BECu);                                                                  /* ldp x12, x14, [sp], #16 */
+    *to_done |= (uint32_t)(e->p - to_done) & 0x3FFFFFF;
+}
+
 static void tr_access(emitter *e, int load, int size, int sign, int dst64, int rt, int addr_reg, uint32_t sp_off)
 {
     (void)sp_off;
-    mov_reg(e, 1, addr_reg);
-    mov_reg(e, 0, HM);
-    mov_imm(e, 2, (uint64_t)size);
+    if (addr_reg != T3) mov_reg(e, T3, addr_reg);
     if (load) {
-        call(e, (const void *)h_load);
+        mem_access(e, 1, size);
         if (rt != 31) {
             if (sign) {
                 /* sxtb/sxth/sxtw into x0 (64) or w0 (32) */
@@ -357,7 +402,7 @@ static void tr_access(emitter *e, int load, int size, int sign, int dst64, int r
     } else {
         if (rt == 31) mov_imm(e, 3, 0);
         else ldr_x(e, 3, HC, OFF_X(rt));
-        call(e, (const void *)h_store);
+        mem_access(e, 0, size);
     }
 }
 
@@ -434,33 +479,25 @@ static int tr_ldst(emitter *e, uint32_t sp_off, uint32_t insn, uint64_t pc)
         if (mode == 1) mov_reg(e, addr, hb);
         else add_imm64(e, addr, hb, off);
         set_pc(e, pc);
+        if (addr != T3) mov_reg(e, T3, addr);
         if (L) {
-            /* both loads first (into the stack slot pair of x19/x20 frame), then the registers:
-             * a fault on the second access must leave the registers unchanged */
-            mov_reg(e, 1, addr); mov_reg(e, 0, HM); mov_imm(e, 2, (uint64_t)b);
-            emit(e, 0xA9BF33EBu);                               /* stp x11, x12, [sp, #-16]! */
-            call(e, (const void *)h_load);
-            emit(e, 0xA8C133EBu);                               /* ldp x11, x12, [sp], #16 */
-            mov_reg(e, T2, 0);
-            add_imm64(e, 1, addr, b); mov_reg(e, 0, HM); mov_imm(e, 2, (uint64_t)b);
-            emit(e, 0xA9BF33EBu);
-            call(e, (const void *)h_load);
-            emit(e, 0xA8C133EBu);
+            /* both loads first: a fault on the second access leaves the registers unchanged */
+            mem_access(e, 1, b);
+            emit(e, 0xAA0003EEu);                               /* mov x14, x0 */
+            add_imm64(e, T3, T3, b);
+            mem_access(e, 1, b);
             if (sign) {
-                emit(e, 0x93407C00u | (uint32_t)T2 << 5 | (uint32_t)T2);       /* sxtw x11, w11 */
-                emit(e, 0x93407C00u);                                            /* sxtw x0, w0 */
+                emit(e, 0x93407C00u | 14u << 5 | 14u);          /* sxtw x14, w14 */
+                emit(e, 0x93407C00u);                           /* sxtw x0, w0 */
             }
-            if (rt != 31) str_x(e, T2, HC, OFF_X(rt));
+            if (rt != 31) str_x(e, 14, HC, OFF_X(rt));
             if (rt2 != 31) str_x(e, 0, HC, OFF_X(rt2));
         } else {
-            mov_reg(e, 1, addr); mov_reg(e, 0, HM); mov_imm(e, 2, (uint64_t)b);
             if (rt == 31) mov_imm(e, 3, 0); else ldr_x(e, 3, HC, OFF_X(rt));
-            emit(e, 0xA9BF33EBu);
-            call(e, (const void *)h_store);
-            emit(e, 0xA8C133EBu);
-            add_imm64(e, 1, addr, b); mov_reg(e, 0, HM); mov_imm(e, 2, (uint64_t)b);
+            mem_access(e, 0, b);
+            add_imm64(e, T3, T3, b);
             if (rt2 == 31) mov_imm(e, 3, 0); else ldr_x(e, 3, HC, OFF_X(rt2));
-            call(e, (const void *)h_store);
+            mem_access(e, 0, b);
         }
         if (wbk) {
             ldr_x(e, T0, HC, rn == 31 ? sp_off : OFF_X(rn));
@@ -600,7 +637,7 @@ static block *translate(wd_machine *m, jit_state *j, uint64_t pc, const uint8_t 
     b->fn = NULL;
     uint32_t sp_off = (mode & 1) && (mode & 2) ? OFF_SP1 : OFF_SP0;
 
-    emitter e = { j, j->wcode + j->used, j->wcode + j->cap, 0, 0, 0 };
+    emitter e = { j, j->wcode + j->used, j->wcode + j->cap, 0, 0, 0, (int)(mode >> 2) };
     uint32_t *start = e.p;
     prologue(&e);
     int ended = 0;
@@ -670,7 +707,7 @@ uint64_t wd_jit_run(wd_machine *m, uint64_t max)
             (void)wd_fetch(m, pc);                       /* fills the fetch cache or raises the abort */
         }
         const uint8_t *host = m->fetch_host + (pc & 0xFFF);
-        uint32_t mode = (uint32_t)c->el | (uint32_t)c->spsel << 1;
+        uint32_t mode = (uint32_t)c->el | (uint32_t)c->spsel << 1 | (uint32_t)wd_mem_mode(m) << 2;
         unsigned h = (unsigned)((pc >> 2) ^ (pc >> 18)) & (NBUCKET - 1);
         block *b;
         for (b = j->bucket[h]; b; b = b->next)
