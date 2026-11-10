@@ -25,6 +25,8 @@
     <string name="btn_vm_cpu">CPU: %1$d inti</string>
     <string name="btn_vm_net_on">Jaringan: aktif</string>
     <string name="btn_vm_net_off">Jaringan: mati</string>
+    <string name="btn_vm_jit_on">JIT: aktif</string>
+    <string name="btn_vm_jit_off">JIT: mati (interpreter)</string>
     <string name="btn_reset_vars">Reset NVRAM</string>
     <string name="btn_console">Konsol</string>
     <string name="vm_section">Mesin virtual UEFI (Windows ARM64)</string>

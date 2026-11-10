@@ -326,6 +326,13 @@ public final class Engine {
 
     private static native boolean nativeJitActive(long h);
 
+    private static native void nativeSetJit(long h, boolean on);
+
+    /** Turns block translation off (or back on where available); call from Setup. */
+    static void setJit(long h, boolean on) {
+        nativeSetJit(h, on);
+    }
+
     /** True when guest code is translated to host code (ARM64 devices); call from Setup. */
     static boolean jitActive(long h) {
         return nativeJitActive(h);

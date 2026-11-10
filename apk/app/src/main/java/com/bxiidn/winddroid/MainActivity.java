@@ -36,7 +36,7 @@ public class MainActivity extends Activity implements Engine.Listener {
     private static final int[] NEWDISK_GB = {32, 64, 128, 256};
     private long pendingNewDiskGb;
     private TextView vmDisks;
-    private Button vmRamButton, vmCpuButton, vmNetButton;
+    private Button vmRamButton, vmCpuButton, vmNetButton, vmJitButton;
     private static final int[] VM_CPU_CHOICES = {1, 2, 4};
     private static final long MAX_IMAGE = 512L << 20;
     private static final int MAX_TERMINAL_CHARS = 120_000;
@@ -84,6 +84,11 @@ public class MainActivity extends Activity implements Engine.Listener {
         vmRamButton = findViewById(R.id.btn_vm_ram);
         vmCpuButton = findViewById(R.id.btn_vm_cpu);
         vmNetButton = findViewById(R.id.btn_vm_net);
+        vmJitButton = findViewById(R.id.btn_vm_jit);
+        vmJitButton.setOnClickListener(v -> {
+            prefs.edit().putBoolean(VmActivity.PREF_JIT, !prefs.getBoolean(VmActivity.PREF_JIT, true)).apply();
+            updateVmLabels();
+        });
         vmNetButton.setOnClickListener(v -> {
             prefs.edit().putBoolean(VmActivity.PREF_NET, !prefs.getBoolean(VmActivity.PREF_NET, true)).apply();
             updateVmLabels();
@@ -202,6 +207,7 @@ public class MainActivity extends Activity implements Engine.Listener {
         vmRamButton.setText(getString(R.string.btn_vm_ram, prefs.getLong(VmActivity.PREF_RAM, 2048)));
         vmCpuButton.setText(getString(R.string.btn_vm_cpu, prefs.getInt(VmActivity.PREF_CPUS, 2)));
         vmNetButton.setText(prefs.getBoolean(VmActivity.PREF_NET, true) ? R.string.btn_vm_net_on : R.string.btn_vm_net_off);
+        vmJitButton.setText(prefs.getBoolean(VmActivity.PREF_JIT, true) ? R.string.btn_vm_jit_on : R.string.btn_vm_jit_off);
     }
 
     private void startVm() {

@@ -43,7 +43,7 @@ import java.util.Locale;
  */
 public class VmActivity extends Activity implements Engine.Listener {
     static final String TAG = "WindDroid";
-    static final String PREF_DISK = "disk_uri", PREF_ISO = "iso_uri", PREF_RAM = "vm_ram_mb", PREF_CPUS = "vm_cpus", PREF_NET = "vm_net";
+    static final String PREF_DISK = "disk_uri", PREF_ISO = "iso_uri", PREF_RAM = "vm_ram_mb", PREF_CPUS = "vm_cpus", PREF_NET = "vm_net", PREF_JIT = "vm_jit";
     static final String PREF_DISK_NAME = "disk_name", PREF_ISO_NAME = "iso_name";
 
     private final Engine engine = new Engine();
@@ -117,6 +117,7 @@ public class VmActivity extends Activity implements Engine.Listener {
         long ram = prefs.getLong(PREF_RAM, 2048);
         int cpus = prefs.getInt(PREF_CPUS, 2);
         boolean net = prefs.getBoolean(PREF_NET, true);
+        boolean useJit = prefs.getBoolean(PREF_JIT, true);
         byte[] code = asset(this, "QEMU_EFI.fd");
         byte[] vars = null;
         File vf = varsFile();
@@ -161,6 +162,7 @@ public class VmActivity extends Activity implements Engine.Listener {
                 }
                 Engine.attachUsbInput(h);
                 if (net) Engine.attachUsbNet(h);
+                if (!useJit) Engine.setJit(h, false);
                 jit = Engine.jitActive(h);
             }, this);
         } finally {
