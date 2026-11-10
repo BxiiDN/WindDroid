@@ -235,6 +235,38 @@ public class VmActivity extends Activity implements Engine.Listener {
     }
 
     @Override
+    public void onDiag(String report) {
+        if (report == null) return;
+        synchronized (serial) {
+            serial.append("\n===== ").append(getString(R.string.btn_diag)).append(" =====\n").append(report).append("=====\n");
+        }
+        ui.post(() -> {
+            android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText("WindDroid diagnostics", report));
+            TextView tv = new TextView(this);
+            tv.setText(report);
+            tv.setTextIsSelectable(true);
+            tv.setTypeface(android.graphics.Typeface.MONOSPACE);
+            tv.setTextSize(11);
+            tv.setPadding(24, 24, 24, 24);
+            ScrollView sv = new ScrollView(this);
+            sv.addView(tv);
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.diag_title)
+                    .setView(sv)
+                    .setPositiveButton(R.string.diag_share, (d, w) -> {
+                        Intent i = new Intent(Intent.ACTION_SEND);
+                        i.setType("text/plain");
+                        i.putExtra(Intent.EXTRA_TEXT, report);
+                        startActivity(Intent.createChooser(i, getString(R.string.diag_title)));
+                    })
+                    .setNegativeButton(android.R.string.ok, null)
+                    .show();
+            if (console.getVisibility() == View.VISIBLE) renderConsole();
+        });
+    }
+
+    @Override
     public void onVars(byte[] vars) {
         File f = varsFile(), tmp = new File(getFilesDir(), "uefi_vars.tmp");
         try (FileOutputStream out = new FileOutputStream(tmp)) {
@@ -426,6 +458,7 @@ public class VmActivity extends Activity implements Engine.Listener {
             console.setVisibility(show ? View.VISIBLE : View.GONE);
             if (show) renderConsole();
         });
+        bar(row, getString(R.string.btn_diag), v -> engine.diagnose());
         bar(row, "■", v -> confirmStop());
     }
 

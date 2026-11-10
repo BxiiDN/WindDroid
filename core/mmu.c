@@ -251,6 +251,17 @@ void wd_write_slow(wd_machine *m, uint64_t va, int size, uint64_t val, int unpri
     wd_phys_write(m, e->pa_page | (va & 0xFFF), size, val);
 }
 
+/* read an instruction for diagnostics: no fault, no side effects; -1 if unmapped */
+int wd_peek_insn(wd_machine *m, uint64_t va, uint32_t *out)
+{
+    walk_result r;
+    if (walk(m, va, &r)) return -1;
+    uint8_t *h = wd_phys_host(m, (r.pa_page & OA_MASK) | (va & 0xFFF));
+    if (!h) return -1;
+    memcpy(out, h, 4);
+    return 0;
+}
+
 uint32_t wd_fetch(wd_machine *m, uint64_t va)
 {
     wd_cpu *c = &m->cpu;

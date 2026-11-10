@@ -95,7 +95,7 @@ static uint8_t *read_file(const char *path, size_t *len)
 #define MAX_DISKS 8
 static const char *disks[MAX_DISKS];
 static int disk_kind[MAX_DISKS];
-static int ndisks, usb_hid, usb_net, no_fast, use_jit, ncpu = 1;
+static int ndisks, usb_hid, usb_net, no_fast, use_jit, ncpu = 1, diag;
 static int key_usb[MAX_KEYS];
 /* pending USB keystrokes: one key change per run slice so the guest sees every report */
 static int usb_type_ev[4096][2];
@@ -126,7 +126,7 @@ int main(int argc, char **argv)
     int realtime = 0, trace = 0, quiet = 0, opt, interactive = 0;
     const char *input = NULL, *bios = NULL, *vars_path = NULL, *dtb_path = NULL, *fb_path = NULL, *acpi_dir = NULL;
 
-    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:IF:A:D:c:u:UK:XJjTP:N")) != -1) {
+    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:IF:A:D:c:u:UK:XJjTP:NG")) != -1) {
         switch (opt) {
         case 'm': ram_mb = strtoull(optarg, NULL, 0); break;
         case 'n': limit = strtoull(optarg, NULL, 0); break;
@@ -146,6 +146,7 @@ int main(int argc, char **argv)
             break;
         case 'U': usb_hid = 1; break;
         case 'N': usb_net = 1; break;
+        case 'G': diag = 1; break;
         case 'X': no_fast = 1; break;
         case 'J': use_jit = 1; break;
         case 'j': use_jit = -1; break;
@@ -343,6 +344,10 @@ int main(int argc, char **argv)
         char st[4096];
         wd_dump_state(m, st, sizeof st);
         fputs(st, stderr);
+    }
+    if (diag) {
+        char *rep = malloc(65536);
+        if (rep) { wd_diag_report(m, rep, 65536); fputs(rep, stderr); free(rep); }
     }
     if (fb_path) {
         wd_fb_info fb;

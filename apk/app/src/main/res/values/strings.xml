@@ -42,4 +42,7 @@
     <string name="err_permission">Izin akses ke %1$s hilang; pilih filenya lagi.</string>
     <string name="disk_format">%1$s (%2$s)</string>
     <string name="welcome">WindDroid - mesin virtual AArch64 (peta memori QEMU virt: GICv3, PL011, timer generik, PSCI).\n\nTekan \"Jalankan Monitor\" untuk program demo bawaan, atau \"Muat image\" untuk menjalankan ELF/biner AArch64 bare-metal milik Anda (dimuat di 0x40000000 jika biner mentah).\n\nMesin virtual UEFI: pilih \"Disk sistem\" (VHDX/VHD/IMG, misalnya VHDX Windows 11 ARM64 dari Microsoft) dan/atau \"ISO installer\" (ISO Windows 11 ARM64), lalu tekan \"Mulai VM\". Untuk instal dari ISO, buat dulu disk kosong dengan \"Buat disk baru\". Firmware EDK2 (UEFI), NVMe, USB DVD, keyboard dan tablet USB, dan layar sudah diemulasikan; mem-boot Windows sampai desktop belum diuji dan masih sangat lambat tanpa JIT.\n</string>
+    <string name="btn_diag">Diagnosa</string>
+    <string name="diag_title">Laporan diagnosa (sudah disalin)</string>
+    <string name="diag_share">Bagikan</string>
 </resources>

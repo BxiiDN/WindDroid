@@ -424,6 +424,11 @@ wd_run_result wd_run(wd_machine *m, uint64_t max_insns)
     }
 
     while (m->budget) {
+        {
+            uint32_t i = m->diag_n++ % WD_DIAG_SAMPLES;
+            m->diag_pc[i] = c->pc;
+            m->diag_cpu[i] = (uint8_t)m->cur;
+        }
         /* SMP: another CPU's turn at the end of a slice, on WFI/WFE, or when this one is off */
         if (m->ncpu > 1 && (m->yield || m->wfi || !m->cpu_on[m->cur] || c->icount >= m->slice_end)) {
             if (m->wfi && !m->yield && m->cpu_on[m->cur] && c->icount < m->slice_end) {

@@ -28,6 +28,7 @@ add_library(winddroid SHARED
     ${WD_ROOT}/devices/nat.c
     ${WD_ROOT}/devices/xhci.c
     ${WD_ROOT}/host/machine.c
+    ${WD_ROOT}/host/diag.c
     ${WD_ROOT}/host/platform.c
     ${WD_ROOT}/host/fdt.c
     ${WD_ROOT}/host/acpi.c)

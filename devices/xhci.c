@@ -1027,6 +1027,32 @@ int wd_attach_usb_storage(wd_machine *m, const wd_disk *disk, int cdrom)
     return wd_xhci_attach(m, d);
 }
 
+size_t wd_xhci_diag(wd_machine *m, char *buf, size_t len)
+{
+    xhci *x = get_xhci(m, 0);
+    if (!x || !len) return 0;
+    static const char *st[] = { "off", "run", "HALT", "stop", "ERR" };
+    int n = snprintf(buf, len, "xhci: usbcmd=%x usbsts=%x iman=%x erdp=%llx er_full=%d\n", x->usbcmd, x->usbsts, x->iman,
+                     (unsigned long long)x->erdp, x->er_full);
+    for (int p = 0; p < NPORTS && n > 0 && (size_t)n < len; p++) {
+        wd_usbdev *d = x->port[p].dev;
+        if (!d) continue;
+        n += snprintf(buf + n, len - (size_t)n, "  port %d: %s portsc=%x cfg=%d alt=%d,%d", p + 1,
+                      d->descs->strings[2] ? d->descs->strings[2] : "?", x->port[p].portsc, d->configuration, d->alt[0], d->alt[1]);
+        for (int sl = 1; sl <= NSLOTS && n > 0 && (size_t)n < len; sl++) {
+            if (!x->slot[sl].enabled || x->slot[sl].port != p + 1) continue;
+            n += snprintf(buf + n, len - (size_t)n, " slot %d:", sl);
+            for (int e = 1; e < 32 && n > 0 && (size_t)n < len; e++)
+                if (x->slot[sl].ep[e].state)
+                    n += snprintf(buf + n, len - (size_t)n, " ep%d=%s@%llx", e, st[x->slot[sl].ep[e].state < 5 ? x->slot[sl].ep[e].state : 0],
+                                  (unsigned long long)x->slot[sl].ep[e].deq);
+        }
+        if (n > 0 && (size_t)n < len) n += snprintf(buf + n, len - (size_t)n, "\n");
+        if (d->diag && n > 0 && (size_t)n < len) n += d->diag(d, buf + n, (int)(len - (size_t)n));
+    }
+    return n < 0 ? 0 : ((size_t)n < len ? (size_t)n : len - 1);
+}
+
 int wd_attach_usb_net(wd_machine *m, const uint8_t mac[6])
 {
     static const uint8_t def[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };

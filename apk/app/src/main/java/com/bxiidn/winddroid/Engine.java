@@ -39,6 +39,9 @@ public final class Engine {
 
         /** The firmware variable store changed (VM thread). */
         default void onVars(byte[] vars) {}
+
+        /** A diagnostic report asked for with {@link #diagnose()} (VM thread). */
+        default void onDiag(String report) {}
     }
 
     /** Prepares a freshly created machine; throws with a readable message on failure. */
@@ -55,7 +58,7 @@ public final class Engine {
         }
     }
 
-    private static final int EV_SERIAL = 0, EV_KEY = 1, EV_POINTER = 2;
+    private static final int EV_SERIAL = 0, EV_KEY = 1, EV_POINTER = 2, EV_DIAG = 3;
 
     private final ConcurrentLinkedQueue<Ev> input = new ConcurrentLinkedQueue<>();
     private final Object lock = new Object();
@@ -120,6 +123,11 @@ public final class Engine {
         post(new Ev(EV_POINTER, x, y, buttons, wheel, null));
     }
 
+    /** Asks the VM thread for a diagnostic report (delivered to Listener.onDiag). */
+    public void diagnose() {
+        post(new Ev(EV_DIAG, 0, 0, 0, 0, null));
+    }
+
     public Bitmap frame() {
         return frame;
     }
@@ -159,6 +167,8 @@ public final class Engine {
                         slice = 400_000L;
                     } else if (e.kind == EV_POINTER) {
                         nativePointer(h, e.a, e.b, e.c, e.d);
+                    } else if (e.kind == EV_DIAG) {
+                        l.onDiag(nativeDiag(h));
                     } else {
                         nativeInput(h, e.data);
                     }
@@ -285,6 +295,8 @@ public final class Engine {
     private static native String nativeError(long h);
 
     private static native String nativeState(long h);
+
+    private static native String nativeDiag(long h);
 
     private static native String nativeVersion();
 

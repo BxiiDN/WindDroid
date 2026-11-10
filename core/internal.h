@@ -259,6 +259,14 @@ struct wd_machine {
     uint8_t *code_page;      /* per RAM page: holds translated code (writes are tracked) */
     void *usbnet;            /* USB network adapter (wd_usbdev), polled from the run loop */
     int undef_logged;        /* undefined instructions at EL1 reported on the console */
+    /* diagnostics (wd_diag_report): PC samples from the run loop, recent synchronous exceptions */
+#define WD_DIAG_SAMPLES 4096
+    uint64_t diag_pc[WD_DIAG_SAMPLES];
+    uint8_t diag_cpu[WD_DIAG_SAMPLES];
+    uint32_t diag_n;
+    struct { uint64_t esr, elr, far; uint8_t cpu, from_el; } diag_exc[16];
+    uint32_t diag_nexc;
+    uint64_t diag_irqs;
     uint64_t net_next;       /* icount of the next network poll */
     uint64_t idle_ns;
     int wfi;
@@ -497,6 +505,8 @@ static inline void wd_write(wd_machine *m, uint64_t va, int size, uint64_t val, 
 }
 
 void wd_net_poll(wd_machine *m);
+int wd_peek_insn(wd_machine *m, uint64_t va, uint32_t *out);
+size_t wd_xhci_diag(wd_machine *m, char *buf, size_t len);
 
 #endif
 

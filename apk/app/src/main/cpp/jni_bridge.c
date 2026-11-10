@@ -115,6 +115,17 @@ JNIEXPORT jstring JNICALL Java_com_bxiidn_winddroid_Engine_nativeState(JNIEnv *e
     return (*env)->NewStringUTF(env, buf);
 }
 
+JNIEXPORT jstring JNICALL Java_com_bxiidn_winddroid_Engine_nativeDiag(JNIEnv *env, jclass cls, jlong p)
+{
+    char *buf = malloc(32768);
+    if (!buf) return NULL;
+    wd_diag_report(H(p)->m, buf, 32768);
+    for (char *q = buf; *q; q++) if ((unsigned char)*q >= 0x80) *q = '?';   /* NewStringUTF wants valid UTF-8 */
+    jstring r = (*env)->NewStringUTF(env, buf);
+    free(buf);
+    return r;
+}
+
 JNIEXPORT jstring JNICALL Java_com_bxiidn_winddroid_Engine_nativeVersion(JNIEnv *env, jclass cls)
 {
     return (*env)->NewStringUTF(env, WD_VERSION);

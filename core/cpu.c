@@ -78,6 +78,11 @@ _Noreturn void wd_exception(wd_machine *m, uint32_t ec, uint32_t iss, uint64_t f
     wd_cpu *c = &m->cpu;
     c->esr = ((uint64_t)ec << 26) | (1u << 25) | (iss & 0x1FFFFFF);
     if (has_far) c->far = far;
+    {
+        uint32_t i = m->diag_nexc++ % 16;
+        m->diag_exc[i].esr = c->esr; m->diag_exc[i].elr = ret_pc; m->diag_exc[i].far = has_far ? far : 0;
+        m->diag_exc[i].cpu = (uint8_t)m->cur; m->diag_exc[i].from_el = (uint8_t)c->el;
+    }
     enter_exception(m, 0x000, ret_pc);
     longjmp(m->jb, 1);
 }
@@ -85,6 +90,7 @@ _Noreturn void wd_exception(wd_machine *m, uint32_t ec, uint32_t iss, uint64_t f
 void wd_take_irq(wd_machine *m)
 {
     m->wfi = 0;
+    m->diag_irqs++;
     enter_exception(m, 0x080, m->cpu.pc);
 }
 

@@ -5,6 +5,7 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "usb.h"
@@ -25,6 +26,8 @@ typedef struct {
     uint32_t dev_len;             /* bytes the device has for (or wants from) the host */
     int status;                   /* CSW status */
     uint8_t resp[RESP_MAX];       /* small responses */
+    uint64_t ncmd, nfail;         /* diagnostics */
+    struct { uint8_t op, status; uint32_t lba, count, host_len; } last[8];
     int stream;                   /* data phase moves blocks of the disk */
     uint64_t pos;                 /* byte offset on the disk for the stream */
     uint8_t *stage;               /* partial block of an OUT stream */
@@ -390,6 +393,16 @@ static int msd_data(wd_usbdev *d, int ep, int in, uint8_t *buf, int len)
         s->host_len = (uint32_t)buf[8] | (uint32_t)buf[9] << 8 | (uint32_t)buf[10] << 16 | (uint32_t)buf[11] << 24;
         s->done = 0;
         scsi_exec(s, buf + 15);
+        {
+            const uint8_t *cb = buf + 15;
+            int i = (int)(s->ncmd++ % 8);
+            s->last[i].op = cb[0];
+            s->last[i].status = (uint8_t)s->status;
+            s->last[i].lba = (cb[0] == 0x28 || cb[0] == 0xA8 || cb[0] == 0x2A || cb[0] == 0xAA || cb[0] == 0xBE) ? rd32(cb + 2) : 0;
+            s->last[i].count = cb[0] == 0x28 || cb[0] == 0x2A ? (uint32_t)(cb[7] << 8 | cb[8]) : cb[0] == 0xA8 || cb[0] == 0xAA ? rd32(cb + 6) : 0;
+            s->last[i].host_len = s->host_len;
+            if (s->status) s->nfail++;
+        }
         int host_in = buf[12] & 0x80;
         if (s->dev_len && s->stream && (host_in ? 0 : 1) != (buf[15] == 0x2A || buf[15] == 0xAA || buf[15] == 0x8A))
             s->status = 2;                                /* direction mismatch */
@@ -475,6 +488,21 @@ static void msd_destroy(wd_usbdev *d)
     free(s);
 }
 
+static int msd_diag(wd_usbdev *d, char *buf, int len)
+{
+    msd *s = (msd *)d;
+    int n = snprintf(buf, (size_t)len, "    %s: %llu blocks of %u, phase %d, %llu commands (%llu failed), last:",
+                     s->cdrom ? "DVD" : "disk", (unsigned long long)s->nblocks, s->bs, s->phase,
+                     (unsigned long long)s->ncmd, (unsigned long long)s->nfail);
+    for (uint64_t k = s->ncmd > 8 ? s->ncmd - 8 : 0; k < s->ncmd && n > 0 && n < len; k++) {
+        int i = (int)(k % 8);
+        n += snprintf(buf + n, (size_t)(len - n), " %02x/%u+%u/%u%s", s->last[i].op, s->last[i].lba, s->last[i].count,
+                      s->last[i].host_len, s->last[i].status ? "!" : "");
+    }
+    if (n > 0 && n < len) n += snprintf(buf + n, (size_t)(len - n), "\n");
+    return n < 0 ? 0 : (n < len ? n : len - 1);
+}
+
 wd_usbdev *wd_usb_storage_new(const wd_disk *disk, int cdrom)
 {
     msd *s = calloc(1, sizeof *s);
@@ -491,6 +519,7 @@ wd_usbdev *wd_usb_storage_new(const wd_disk *disk, int cdrom)
     s->dev.descs = cdrom ? &cd_descs : &disk_descs;
     s->dev.class_control = msd_class_control;
     s->dev.data = msd_data;
+    s->dev.diag = msd_diag;
     s->dev.reset = msd_reset;
     s->dev.destroy = msd_destroy;
     return &s->dev;

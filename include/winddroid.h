@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define WD_VERSION "0.3.1"
+#define WD_VERSION "0.3.2"
 
 typedef struct wd_machine wd_machine;
 
@@ -159,6 +159,8 @@ int         wd_set_option(wd_machine *m, const char *name, int value);
 /* 1 if blocks are translated to host code (AArch64 host with executable memory). */
 int         wd_jit_active(wd_machine *m);
 void        wd_dump_state(wd_machine *m, char *buf, size_t len);
+/* a text report for bug reports: hot code, exceptions, CPU and USB state */
+size_t      wd_diag_report(wd_machine *m, char *buf, size_t len);
 
 #ifdef __cplusplus
 }

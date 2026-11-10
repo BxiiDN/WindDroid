@@ -35,6 +35,8 @@ struct wd_usbdev {
      * (all interfaces back to setting 0). Without it only setting 0 exists. */
     int (*set_interface)(wd_usbdev *d, int iface, int alt);
     void (*reset)(wd_usbdev *d);
+    /* one or more lines of state for wd_diag_report; returns the length written */
+    int (*diag)(wd_usbdev *d, char *buf, int len);
     void (*destroy)(wd_usbdev *d);
     /* set by the host controller */
     struct wd_machine *m;
