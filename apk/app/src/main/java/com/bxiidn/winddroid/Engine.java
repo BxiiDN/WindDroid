@@ -74,15 +74,15 @@ public final class Engine {
 
     /** Creates a machine, loads the image and starts it. Throws if the image cannot be loaded. */
     public synchronized void start(byte[] image, long ramMb, Listener listener) {
-        start(ramMb, false, h -> {
+        start(ramMb, 1, false, h -> {
             if (nativeLoad(h, image) != 0) throw new IllegalArgumentException(nativeError(h));
         }, listener);
     }
 
     /** Creates a machine, runs the setup and starts it on the VM thread. */
-    public synchronized void start(long ramMb, boolean withDisplay, Setup setup, Listener listener) {
+    public synchronized void start(long ramMb, int cpus, boolean withDisplay, Setup setup, Listener listener) {
         stop();
-        long h = nativeCreate(ramMb, true);
+        long h = nativeCreate(ramMb, cpus, true);
         if (h == 0) throw new IllegalStateException("Tidak cukup memori untuk RAM " + ramMb + " MB");
         try {
             setup.apply(h);
@@ -245,6 +245,11 @@ public final class Engine {
         if (nativeAttachUsbInput(h) != 0) throw new IllegalStateException("USB: " + nativeError(h));
     }
 
+    /** USB network adapter (CDC NCM) behind the app's NAT: 10.0.2.15 in the guest. */
+    static void attachUsbNet(long h) {
+        if (nativeAttachUsbNet(h) != 0) throw new IllegalStateException("USB network: " + nativeError(h));
+    }
+
     public static int imageFormat(int fd) {
         return nativeImageFormat(fd);
     }
@@ -259,7 +264,7 @@ public final class Engine {
         return nativeAsciiToHid(ch);
     }
 
-    private static native long nativeCreate(long ramMb, boolean realtime);
+    private static native long nativeCreate(long ramMb, int cpus, boolean realtime);
 
     private static native void nativeDestroy(long h);
 
@@ -292,6 +297,8 @@ public final class Engine {
     private static native int nativeCreateVhdx(int fd, long size);
 
     private static native int nativeAttachUsbInput(long h);
+
+    private static native int nativeAttachUsbNet(long h);
 
     private static native void nativeKey(long h, int usage, boolean down);
 

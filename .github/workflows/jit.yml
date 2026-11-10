@@ -3,7 +3,7 @@ name: jit
 # Block translator development: everything on a native ARM64 runner with -J.
 on:
   push:
-    branches: [jit]
+    branches: [jit, smp]
   workflow_dispatch:
 
 jobs:
@@ -20,12 +20,18 @@ jobs:
         run: |
           python3 tests/jit_diff.py build/winddroid-vm guest/build/t_irq.elf -i 'hey!' || true
           python3 tests/jit_diff.py build/winddroid-vm guest/build/t_sys.elf || true
+          python3 tests/jit_diff.py build/winddroid-vm guest/build/t_smp.elf -P 4 || true
           echo "== full-size blocks"
           WD_JIT_FULL=1 python3 tests/jit_diff.py build/winddroid-vm guest/build/t_irq.elf -i 'hey!' || true
       - name: Guest tests with the translator
         run: python3 tests/run_tests.py --jit --no-firmware
       - name: Firmware, disk and USB tests with the translator
         run: python3 tests/run_tests.py --jit --timeout 600
+      - name: Translator mutants
+        run: MUTATION_JIT=1 python3 tests/mutation_test.py
+      - name: SMP with the translator, many runs
+        run: |
+          for i in 1 2 3 4 5; do build/winddroid-vm -r -J -P 4 guest/build/t_smp.elf | grep -q "0 failures" || exit 1; done
       - name: Speed
         if: always()
         run: |

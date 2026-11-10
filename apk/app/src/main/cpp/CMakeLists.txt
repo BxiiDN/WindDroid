@@ -24,6 +24,8 @@ add_library(winddroid SHARED
     ${WD_ROOT}/devices/image.c
     ${WD_ROOT}/devices/usb.c
     ${WD_ROOT}/devices/usb_storage.c
+    ${WD_ROOT}/devices/usb_net.c
+    ${WD_ROOT}/devices/nat.c
     ${WD_ROOT}/devices/xhci.c
     ${WD_ROOT}/host/machine.c
     ${WD_ROOT}/host/platform.c

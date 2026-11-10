@@ -456,6 +456,9 @@ static void branch_sys(wd_machine *m, uint32_t insn)
                 if (c->el == 0 && !(c->sctlr & (1u << 16)))
                     wd_exception(m, EC_WFX, 1 << 24 | 0, 0, 0, pc);
                 m->wfi = 1;
+            } else if ((h == 1 || h == 2) && m->ncpu > 1) {   /* YIELD, WFE: let another CPU run */
+                m->yield = 1;
+                m->irq_dirty = 1;
             }
             c->pc = pc + 4;
             return;

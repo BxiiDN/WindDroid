@@ -306,6 +306,7 @@ int wd_dma_write(wd_machine *m, uint64_t pa, const void *buf, size_t len)
         size_t chunk = 4096 - (pa & 4095);
         if (chunk > len) chunk = len;
         memcpy(p, src, chunk);
+        wd_code_write_check(m, pa, chunk);
         src += chunk; pa += chunk; len -= chunk;
     }
     return 0;

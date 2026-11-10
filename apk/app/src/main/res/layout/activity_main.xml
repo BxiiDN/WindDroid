@@ -92,6 +92,8 @@
             <Button android:id="@+id/btn_iso" style="@style/Btn" android:text="@string/btn_iso" />
             <Button android:id="@+id/btn_newdisk" style="@style/Btn" android:text="@string/btn_newdisk" />
             <Button android:id="@+id/btn_vm_ram" style="@style/Btn" />
+            <Button android:id="@+id/btn_vm_cpu" style="@style/Btn" />
+            <Button android:id="@+id/btn_vm_net" style="@style/Btn" />
             <Button android:id="@+id/btn_reset_vars" style="@style/Btn" android:text="@string/btn_reset_vars" />
         </LinearLayout>
     </HorizontalScrollView>

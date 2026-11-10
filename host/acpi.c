@@ -166,13 +166,16 @@ static void aml_device(buf *parent, const char *name, buf *body)
     aml_pkg(parent, op, 2, &full);
 }
 
-static void build_dsdt_body(buf *sb)
+static void build_dsdt_body(buf *sb, int ncpu)
 {
     /* CPU */
     buf d = { 0 };
-    aml_name_str(&d, "_HID", "ACPI0007");
-    aml_name_int(&d, "_UID", 0);
-    aml_device(sb, "C000", &d);
+    for (int k = 0; k < ncpu; k++) {
+        char name[5] = { 'C', '0', '0', (char)('0' + k), 0 };
+        aml_name_str(&d, "_HID", "ACPI0007");
+        aml_name_int(&d, "_UID", (uint64_t)k);
+        aml_device(sb, name, &d);
+    }
 
     /* PL011 UART */
     aml_name_str(&d, "_HID", "ARMH0011");
@@ -313,7 +316,7 @@ void wd_acpi_build(wd_machine *m)
     size_t dsdt = table_begin(&t, "DSDT", 2);
     {
         buf sb = { 0 };
-        build_dsdt_body(&sb);
+        build_dsdt_body(&sb, m->ncpu);
         buf scope = { 0 };
         put(&scope, "\\_SB_", 5);
         put(&scope, sb.d, sb.len);
@@ -340,16 +343,18 @@ void wd_acpi_build(wd_machine *m)
     putn(&t, 0, 4); putn(&t, 0, 4);
     put8(&t, 0xC); put8(&t, 24); putn(&t, 0, 2);      /* GIC distributor */
     putn(&t, 0, 4); putn(&t, WD_GICD_BASE, 8); putn(&t, 0, 4); put8(&t, 3); zero(&t, 3);
-    put8(&t, 0xB); put8(&t, 80); putn(&t, 0, 2);      /* GICC for CPU 0 */
-    putn(&t, 0, 4); putn(&t, 0, 4); putn(&t, 1, 4); putn(&t, 0, 4);
-    putn(&t, 0, 4);                                   /* performance interrupt */
-    putn(&t, 0, 8); putn(&t, 0, 8); putn(&t, 0, 8); putn(&t, 0, 8);
-    putn(&t, 0, 4);                                   /* VGIC maintenance interrupt */
-    putn(&t, 0, 8);                                   /* GICR base (use the GICR structure) */
-    putn(&t, 0, 8);                                   /* MPIDR */
-    put8(&t, 0); zero(&t, 3);
-    put8(&t, 0xE); put8(&t, 16); putn(&t, 0, 2);      /* GIC redistributor */
-    putn(&t, WD_GICR_BASE, 8); putn(&t, 0x20000, 4);
+    for (int k = 0; k < m->ncpu; k++) {
+        put8(&t, 0xB); put8(&t, 80); putn(&t, 0, 2);  /* GICC: CPU interface k, processor UID k, enabled */
+        putn(&t, (uint64_t)k, 4); putn(&t, (uint64_t)k, 4); putn(&t, 1, 4); putn(&t, 0, 4);
+        putn(&t, 0, 4);                               /* performance interrupt */
+        putn(&t, 0, 8); putn(&t, 0, 8); putn(&t, 0, 8); putn(&t, 0, 8);
+        putn(&t, 0, 4);                               /* VGIC maintenance interrupt */
+        putn(&t, 0, 8);                               /* GICR base (use the GICR structure) */
+        putn(&t, (uint64_t)k, 8);                     /* MPIDR */
+        put8(&t, 0); zero(&t, 3);
+    }
+    put8(&t, 0xE); put8(&t, 16); putn(&t, 0, 2);      /* GIC redistributor region: one frame per CPU */
+    putn(&t, WD_GICR_BASE, 8); putn(&t, 0x20000ULL * (uint64_t)m->ncpu, 4);
     put8(&t, 0xF); put8(&t, 20); putn(&t, 0, 2);      /* GIC ITS 0 */
     putn(&t, 0, 4); putn(&t, WD_GITS_BASE, 8); putn(&t, 0, 4);
     table_end(&t, madt);

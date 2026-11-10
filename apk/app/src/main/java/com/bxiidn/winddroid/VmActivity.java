@@ -43,7 +43,7 @@ import java.util.Locale;
  */
 public class VmActivity extends Activity implements Engine.Listener {
     static final String TAG = "WindDroid";
-    static final String PREF_DISK = "disk_uri", PREF_ISO = "iso_uri", PREF_RAM = "vm_ram_mb";
+    static final String PREF_DISK = "disk_uri", PREF_ISO = "iso_uri", PREF_RAM = "vm_ram_mb", PREF_CPUS = "vm_cpus", PREF_NET = "vm_net";
     static final String PREF_DISK_NAME = "disk_name", PREF_ISO_NAME = "iso_name";
 
     private final Engine engine = new Engine();
@@ -115,6 +115,8 @@ public class VmActivity extends Activity implements Engine.Listener {
     private void startVm(boolean noDisks) throws IOException {
         SharedPreferences prefs = getSharedPreferences("winddroid", MODE_PRIVATE);
         long ram = prefs.getLong(PREF_RAM, 2048);
+        int cpus = prefs.getInt(PREF_CPUS, 2);
+        boolean net = prefs.getBoolean(PREF_NET, true);
         byte[] code = asset(this, "QEMU_EFI.fd");
         byte[] vars = null;
         File vf = varsFile();
@@ -146,10 +148,10 @@ public class VmActivity extends Activity implements Engine.Listener {
                 desc.append("DVD: ").append(prefs.getString(PREF_ISO_NAME, "iso"));
             }
         }
-        final String info0 = String.format(Locale.US, "RAM %d MB  ·  %s", ram, desc.length() > 0 ? desc : "tanpa disk");
+        final String info0 = String.format(Locale.US, "RAM %d MB  ·  %d CPU%s  ·  %s", ram, cpus, net ? "  ·  jaringan" : "", desc.length() > 0 ? desc : "tanpa disk");
         status.setText(info0);
         try {
-            engine.start(ram, true, h -> {
+            engine.start(ram, cpus, true, h -> {
                 Engine.loadFirmware(h, code, fvars);
                 int i = 0;
                 for (int[] f : fds) {
@@ -158,6 +160,7 @@ public class VmActivity extends Activity implements Engine.Listener {
                     Engine.attachDisk(h, fd, f[1], false, names.get(i++));
                 }
                 Engine.attachUsbInput(h);
+                if (net) Engine.attachUsbNet(h);
                 jit = Engine.jitActive(h);
             }, this);
         } finally {

@@ -1027,6 +1027,22 @@ int wd_attach_usb_storage(wd_machine *m, const wd_disk *disk, int cdrom)
     return wd_xhci_attach(m, d);
 }
 
+int wd_attach_usb_net(wd_machine *m, const uint8_t mac[6])
+{
+    static const uint8_t def[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
+    if (m->usbnet) { snprintf(m->err, sizeof m->err, "only one USB network adapter"); return -1; }
+    wd_usbdev *d = wd_usb_net_new(mac ? mac : def);
+    if (!d) { snprintf(m->err, sizeof m->err, "out of memory"); return -1; }
+    if (wd_xhci_attach(m, d)) { d->destroy(d); snprintf(m->err, sizeof m->err, "no free USB port"); return -1; }
+    m->usbnet = d;
+    return 0;
+}
+
+void wd_net_poll(wd_machine *m)
+{
+    if (m->usbnet) wd_usb_net_poll(m->usbnet);
+}
+
 void wd_key_event(wd_machine *m, int hid_usage, int down)
 {
     wd_usbdev *d = find_dev(m, 0);

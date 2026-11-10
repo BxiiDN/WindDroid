@@ -95,7 +95,7 @@ static uint8_t *read_file(const char *path, size_t *len)
 #define MAX_DISKS 8
 static const char *disks[MAX_DISKS];
 static int disk_kind[MAX_DISKS];
-static int ndisks, usb_hid, no_fast, use_jit;
+static int ndisks, usb_hid, usb_net, no_fast, use_jit, ncpu = 1;
 static int key_usb[MAX_KEYS];
 /* pending USB keystrokes: one key change per run slice so the guest sees every report */
 static int usb_type_ev[4096][2];
@@ -126,7 +126,7 @@ int main(int argc, char **argv)
     int realtime = 0, trace = 0, quiet = 0, opt, interactive = 0;
     const char *input = NULL, *bios = NULL, *vars_path = NULL, *dtb_path = NULL, *fb_path = NULL, *acpi_dir = NULL;
 
-    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:IF:A:D:c:u:UK:XJjT")) != -1) {
+    while ((opt = getopt(argc, argv, "m:n:ri:tqhb:v:d:s:k:IF:A:D:c:u:UK:XJjTP:N")) != -1) {
         switch (opt) {
         case 'm': ram_mb = strtoull(optarg, NULL, 0); break;
         case 'n': limit = strtoull(optarg, NULL, 0); break;
@@ -145,10 +145,15 @@ int main(int argc, char **argv)
             if (ndisks < MAX_DISKS) { disks[ndisks] = optarg; disk_kind[ndisks++] = opt; }
             break;
         case 'U': usb_hid = 1; break;
+        case 'N': usb_net = 1; break;
         case 'X': no_fast = 1; break;
         case 'J': use_jit = 1; break;
         case 'j': use_jit = -1; break;
         case 'T': trace = 2; break;
+        case 'P':
+            ncpu = atoi(optarg);
+            if (ncpu < 1 || ncpu > 8) { fprintf(stderr, "-P: 1..8 CPUs\n"); return 2; }
+            break;
         case 'K': {
             char *eq = strchr(optarg, '=');
             if (eq && nkeys < MAX_KEYS) { *eq = 0; key_after[nkeys] = optarg; key_input[nkeys] = eq + 1; key_usb[nkeys++] = 1; }
@@ -177,7 +182,7 @@ int main(int argc, char **argv)
         if (!img) { perror(argv[optind]); return 2; }
     }
 
-    wd_config cfg = { .ram_size = ram_mb << 20, .realtime = realtime };
+    wd_config cfg = { .ram_size = ram_mb << 20, .realtime = realtime, .ncpu = ncpu };
     wd_machine *m = wd_create(&cfg);
     if (!m) { fprintf(stderr, "out of memory\n"); return 2; }
     wd_set_uart_tx(m, tx, NULL);
@@ -219,6 +224,10 @@ int main(int argc, char **argv)
             fprintf(stderr, "%s: %s\n", path, wd_error(m));
             return 2;
         }
+    }
+    if (usb_net && wd_attach_usb_net(m, NULL)) {
+        fprintf(stderr, "USB network: %s\n", wd_error(m));
+        return 2;
     }
     if (usb_hid && (wd_attach_usb_keyboard(m) || wd_attach_usb_tablet(m))) {
         fprintf(stderr, "USB: %s\n", wd_error(m));

@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define WD_VERSION "0.2.0"
+#define WD_VERSION "0.3.0"
 
 typedef struct wd_machine wd_machine;
 
@@ -61,6 +61,7 @@ typedef void (*wd_uart_tx_fn)(void *opaque, uint8_t ch);
 typedef struct {
     uint64_t ram_size;   /* bytes, multiple of 4 KiB */
     int realtime;        /* 1: counter follows host clock, 0: counter = instructions */
+    int ncpu;            /* virtual CPUs, 1..8 (0 means 1); they share one host thread */
 } wd_config;
 
 wd_machine *wd_create(const wd_config *cfg);
@@ -126,6 +127,10 @@ int  wd_usb_add_xhci(wd_machine *m);
 int  wd_attach_usb_keyboard(wd_machine *m);
 int  wd_attach_usb_tablet(wd_machine *m);
 int  wd_attach_usb_storage(wd_machine *m, const wd_disk *disk, int cdrom);
+/* USB network adapter (CDC NCM, inbox driver in Windows 11) on a user-mode NAT:
+ * the guest gets 10.0.2.15 by DHCP, 10.0.2.2 is the host (127.0.0.1), 10.0.2.3 DNS.
+ * mac NULL: 52:54:00:12:34:56. */
+int  wd_attach_usb_net(wd_machine *m, const uint8_t mac[6]);
 void wd_key_event(wd_machine *m, int hid_usage, int down);
 void wd_pointer_event(wd_machine *m, int x, int y, int buttons, int wheel);
 /* US layout: HID usage for an ASCII character (0 if none), *shift set when Shift is needed. */

@@ -5,6 +5,7 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "../core/internal.h"
@@ -51,12 +52,16 @@ static void build_dtb(wd_machine *m)
     fdt_begin(&f, "cpus");
     fdt_prop_u32(&f, "#address-cells", 1);
     fdt_prop_u32(&f, "#size-cells", 0);
-    fdt_begin(&f, "cpu@0");
-    fdt_prop_str(&f, "device_type", "cpu");
-    fdt_prop_str(&f, "compatible", "arm,armv8");
-    fdt_prop_u32(&f, "reg", 0);
-    fdt_prop_str(&f, "enable-method", "psci");
-    fdt_end(&f);
+    for (int k = 0; k < m->ncpu; k++) {
+        char name[16];
+        snprintf(name, sizeof name, "cpu@%d", k);
+        fdt_begin(&f, name);
+        fdt_prop_str(&f, "device_type", "cpu");
+        fdt_prop_str(&f, "compatible", "arm,armv8");
+        fdt_prop_u32(&f, "reg", (uint32_t)k);           /* MPIDR Aff0 */
+        fdt_prop_str(&f, "enable-method", "psci");
+        fdt_end(&f);
+    }
     fdt_end(&f);
 
     fdt_begin(&f, "intc@8000000");
@@ -68,7 +73,7 @@ static void build_dtb(wd_machine *m)
     fdt_prop_u32(&f, "#size-cells", 2);
     fdt_prop_empty(&f, "ranges");
     fdt_prop_u32(&f, "#redistributor-regions", 1);
-    { uint64_t r[] = { WD_GICD_BASE, 0x10000, WD_GICR_BASE, 0x20000 }; fdt_prop_reg64(&f, "reg", r, 2); }
+    { uint64_t r[] = { WD_GICD_BASE, 0x10000, WD_GICR_BASE, 0x20000ULL * (uint64_t)m->ncpu }; fdt_prop_reg64(&f, "reg", r, 2); }
     { uint32_t c[] = { GIC_PPI, 9, IRQ_LEVEL_HI }; fdt_prop_cells(&f, "interrupts", c, 3); }
     fdt_begin(&f, "its@8080000");
     fdt_prop_u32(&f, "phandle", PH_ITS);

@@ -36,7 +36,8 @@ public class MainActivity extends Activity implements Engine.Listener {
     private static final int[] NEWDISK_GB = {32, 64, 128, 256};
     private long pendingNewDiskGb;
     private TextView vmDisks;
-    private Button vmRamButton;
+    private Button vmRamButton, vmCpuButton, vmNetButton;
+    private static final int[] VM_CPU_CHOICES = {1, 2, 4};
     private static final long MAX_IMAGE = 512L << 20;
     private static final int MAX_TERMINAL_CHARS = 120_000;
     private static final long[] RAM_CHOICES = {128, 256, 512, 1024, 2048};
@@ -81,6 +82,19 @@ public class MainActivity extends Activity implements Engine.Listener {
         ramButton.setOnClickListener(v -> cycleRam());
         vmDisks = findViewById(R.id.vm_disks);
         vmRamButton = findViewById(R.id.btn_vm_ram);
+        vmCpuButton = findViewById(R.id.btn_vm_cpu);
+        vmNetButton = findViewById(R.id.btn_vm_net);
+        vmNetButton.setOnClickListener(v -> {
+            prefs.edit().putBoolean(VmActivity.PREF_NET, !prefs.getBoolean(VmActivity.PREF_NET, true)).apply();
+            updateVmLabels();
+        });
+        vmCpuButton.setOnClickListener(v -> {
+            int cur = prefs.getInt(VmActivity.PREF_CPUS, 2), next = VM_CPU_CHOICES[0];
+            for (int i = 0; i < VM_CPU_CHOICES.length; i++)
+                if (VM_CPU_CHOICES[i] == cur) next = VM_CPU_CHOICES[(i + 1) % VM_CPU_CHOICES.length];
+            prefs.edit().putInt(VmActivity.PREF_CPUS, next).apply();
+            updateVmLabels();
+        });
         findViewById(R.id.btn_vm).setOnClickListener(v -> startVm());
         findViewById(R.id.btn_disk).setOnClickListener(v -> pickDocument(REQ_DISK));
         findViewById(R.id.btn_iso).setOnClickListener(v -> pickDocument(REQ_ISO));
@@ -186,6 +200,8 @@ public class MainActivity extends Activity implements Engine.Listener {
         vmDisks.setText(getString(R.string.vm_disk_label, disk == null ? getString(R.string.none) : disk) + "\n"
                 + getString(R.string.vm_iso_label, iso == null ? getString(R.string.none) : iso));
         vmRamButton.setText(getString(R.string.btn_vm_ram, prefs.getLong(VmActivity.PREF_RAM, 2048)));
+        vmCpuButton.setText(getString(R.string.btn_vm_cpu, prefs.getInt(VmActivity.PREF_CPUS, 2)));
+        vmNetButton.setText(prefs.getBoolean(VmActivity.PREF_NET, true) ? R.string.btn_vm_net_on : R.string.btn_vm_net_off);
     }
 
     private void startVm() {

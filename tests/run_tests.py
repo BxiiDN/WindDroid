@@ -20,7 +20,7 @@ TESTS = [
     ("t_sys", [], ["t_sys: 0 failures"]),
     ("t_mmu", [], ["t_mmu: 0 failures"]),
     ("t_el0", [], ["t_el0: 0 failures"]),
-    ("t_irq", ["-i", "hey!"], ["ticks=5 sgis=2 uart=1 rx=\"hey!\" failures=0"]),
+    ("t_irq", ["-i", "hey!"], ["ticks=8 sgis=2 uart=1 rx=\"hey!\" failures=0"]),
     ("t_cprog_O0", [], ["t_cprog: 0 failures"]),
     ("t_cprog_O2", [], ["t_cprog: 0 failures"]),
     ("t_cprog_Os", [], ["t_cprog: 0 failures"]),
@@ -30,6 +30,9 @@ TESTS = [
     ("t_float", [], subprocess.run([sys.executable, os.path.join(ROOT, "tests", "float_ref.py")],
                                    capture_output=True, text=True).stdout.split("\n")[:3]),
     ("t_msi", ["-U", "-D", "{msidisk}"], ["msi: 0 failures"]),
+    ("t_smp", ["-P", "4"], ["smp: 4 CPUs, counter=12000 atomic=12000, 0 failures"]),
+    ("t_net", ["-N", "-n", "40000000000", "-i", "{netports}"], ["tcp: 300000 bytes echoed", "tcp: slow reader got all 300000 bytes", "net: 0 failures"]),
+    ("t_smp", ["-P", "4", "-X"], ["smp: 4 CPUs, counter=12000 atomic=12000, 0 failures"]),
     # the same programs through the general decoder only
     ("alu_gen", ["-X"], ["alu: 4000 checks, 0 failures"]),
     ("mem_gen", ["-X"], ["mem: 4117 checks, 0 failures"]),
@@ -38,6 +41,75 @@ TESTS = [
      ["WindDroid Monitor", "selftest: all 6 checks passed",
       "2 3 5 7 11 13 17 19 23 29 31 37 41 43 47", "sha256(abc) = ba7816bf", "Powering off"]),
 ]
+
+
+def start_net_services():
+    """Echo services on 127.0.0.1 for t_net (the guest reaches them as 10.0.2.2).
+    Returns the line the guest reads: T<tcp port> U<udp port> C<closed tcp port>."""
+    import socket
+    import threading
+
+    tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    tcp.bind(("127.0.0.1", 0))
+    tcp.listen(16)
+
+    def serve(c):
+        with c:
+            while True:
+                d = c.recv(65536)
+                if not d:
+                    break
+                c.sendall(d)
+
+    def accept():
+        while True:
+            c, _ = tcp.accept()
+            threading.Thread(target=serve, args=(c,), daemon=True).start()
+
+    udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp.bind(("127.0.0.1", 0))
+
+    def echo():
+        while True:
+            d, a = udp.recvfrom(65536)
+            udp.sendto(d, a)
+
+    # a slow reader with a small receive buffer: the NAT's buffer fills and its window closes
+    slow = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    slow.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    slow.bind(("127.0.0.1", 0))
+    slow.listen(4)
+
+    def slow_serve(c):
+        with c:
+            time.sleep(1.0)
+            n, bad = 0, -1
+            while True:
+                d = c.recv(4096)
+                if not d:
+                    break
+                for k, b in enumerate(d):
+                    i = n + k
+                    if bad < 0 and b != ((i * 7 + (i >> 9)) & 0xFF):
+                        bad = i
+                n += len(d)
+                time.sleep(0.001)
+            c.sendall(f"GOOD {n}".encode() if bad < 0 else f"BAD {bad}".encode())
+
+    def slow_accept():
+        while True:
+            c, _ = slow.accept()
+            threading.Thread(target=slow_serve, args=(c,), daemon=True).start()
+
+    closed = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    closed.bind(("127.0.0.1", 0))
+    cport = closed.getsockname()[1]
+    closed.close()
+    threading.Thread(target=accept, daemon=True).start()
+    threading.Thread(target=echo, daemon=True).start()
+    threading.Thread(target=slow_accept, daemon=True).start()
+    return f"T{tcp.getsockname()[1]} U{udp.getsockname()[1]} C{cport} S{slow.getsockname()[1]}\\n"
 
 
 FW = os.path.join(ROOT, "firmware")
@@ -54,6 +126,8 @@ FW_TESTS = [
     ("uefi_gop", ["-s", "Please select boot device", "-k", "Press any key=\\r", "-F", "{screen}"],
      ["Please select boot device"]),
     ("uefi_usb_kbd", ["-U", "-s", "Please select boot device", "-K", "Press any key=\\r"],
+     ["Press any key to enter the Boot Manager Menu", "Please select boot device"]),
+    ("uefi_smp4", ["-P", "4", "-U", "-N", "-s", "Please select boot device", "-K", "Press any key=\\r"],
      ["Press any key to enter the Boot Manager Menu", "Please select boot device"]),
 ]
 
@@ -306,6 +380,7 @@ def main():
     with open(msidisk, "wb") as f:
         f.write(b"WDMSI")
         f.truncate(1 << 20)
+    netports = start_net_services()
     failed = []
     if args.only_disks:
         failed = run_disk_tests(args.vm, args.quiet, max(args.timeout, 300))
@@ -313,10 +388,11 @@ def main():
         return 1 if failed else 0
     for name, extra, want in TESTS:
         elf = os.path.join(args.guests, name + ".elf")
-        cmd = [args.vm, "-q", "-n", "400000000"] + JIT_ARGS + [a.replace("{msidisk}", msidisk) for a in extra] + [elf]
+        cmd = [args.vm, "-q", "-n", "400000000"] + JIT_ARGS + [a.replace("{msidisk}", msidisk).replace("{netports}", netports) for a in extra] + [elf]
         t0 = time.time()
         try:
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
+            env = dict(os.environ, WINDDROID_NAT_SNDBUF="4096")   # small host buffers: the NAT's own must fill
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout, env=env)
             out, code = p.stdout + p.stderr, p.returncode
         except subprocess.TimeoutExpired as e:
             out, code = (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or ""), -1
@@ -337,6 +413,14 @@ def main():
         total += len(FW_TESTS)
         failed += run_disk_tests(args.vm, args.quiet, max(args.timeout, 300))
         total += DISK_TESTS
+        total += 1
+        p = subprocess.run([sys.executable, os.path.join(ROOT, "tests", "dtb_check.py"), args.vm,
+                            os.path.join(FW, "QEMU_EFI.fd")], capture_output=True, text=True)
+        if not args.quiet or p.returncode:
+            print(f"{'PASS' if p.returncode == 0 else 'FAIL'}  device_tree")
+        if p.returncode:
+            failed.append("device_tree")
+            print("      " + "\n      ".join(p.stdout.strip().splitlines()[-15:]))
         acpiexec = os.environ.get("ACPIEXEC") or os.path.join(ROOT, "..", "ext", "acpica", "generate", "unix", "bin", "acpiexec")
         if os.path.exists(acpiexec):
             total += 1

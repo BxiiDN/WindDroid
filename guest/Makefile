@@ -7,7 +7,7 @@ B       := build
 RT      := lib/start.S lib/rt.c
 PY      := python3
 
-PROGS := alu_gen mem_gen simd_gen t_sys t_mmu t_el0 t_irq t_msi t_cprog_O0 t_cprog_O2 t_cprog_Os t_cprog_gro t_simdmem t_float monitor
+PROGS := alu_gen mem_gen simd_gen t_sys t_mmu t_el0 t_irq t_msi t_cprog_O0 t_cprog_O2 t_cprog_Os t_cprog_gro t_simdmem t_float t_smp t_net monitor
 all: $(addprefix $(B)/,$(addsuffix .elf,$(PROGS)))
 
 $(B)/gen/alu_gen.S: ../tests/gen_alu.py

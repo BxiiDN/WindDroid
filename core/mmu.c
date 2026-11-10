@@ -229,7 +229,12 @@ void wd_write_slow(wd_machine *m, uint64_t va, int size, uint64_t val, int unpri
     wd_tlbe *e = wd_translate(m, va, ACC_WRITE, unpriv);
     if (e->host && !e->ro) {
         uint8_t *p = e->host + (va & 0xFFF);
-        if (!unpriv) {
+        int code = 0;
+        if (m->code_page && e->host >= m->ram && e->host < m->ram + m->ram_size) {
+            uint64_t page = (uint64_t)(e->host - m->ram) >> 12;
+            if (m->code_page[page]) { code = 1; wd_jit_page_written(m, page); }
+        }
+        if (!unpriv && !code) {
             unsigned i = (unsigned)(va >> 12) & (FTLB_SIZE - 1);
             int mode = wd_mem_mode(m);
             m->ftlb_w[mode][i].vpn = va >> 12;

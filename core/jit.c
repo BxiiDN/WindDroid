@@ -39,22 +39,29 @@ int wd_decode_bitmask(int sf, int N, int imms, int immr, uint64_t *out);
 typedef void (*block_fn)(wd_machine *m, wd_cpu *c);
 
 typedef struct block {
-    uint64_t pc;
+    uint64_t pc;                         /* ~0: invalidated */
     const uint8_t *host;                 /* guest code in host memory */
-    uint32_t mode;                       /* el | spsel << 1 */
+    uint32_t mode;                       /* el | spsel << 1 | memory mode << 2 */
     uint32_t n;                          /* guest instructions */
-    uint32_t words[MAX_INSNS];
+    uint64_t page;                       /* RAM page index of the code, NO_PAGE outside RAM */
+    uint32_t words[MAX_INSNS];           /* compared before each run when outside RAM */
     block_fn fn;                         /* NULL: first instruction is not translatable */
-    struct block *next;
+    struct block *next, *next_page;
 } block;
+
+#define NO_PAGE   (~0ULL)
+#define NPAGEHASH 16384
+#define POOL      65536
+#define ENTRY_SKIP 4                     /* words of prologue before the body (chained entry) */
 
 typedef struct {
     uint32_t *code;                      /* RX view */
     uint32_t *wcode;                     /* RW view (same pages) */
     size_t used, cap;                    /* in 32-bit words */
     block *bucket[NBUCKET];
+    block *page_head[NPAGEHASH];
     block *pool;
-    size_t npool, cappool;
+    size_t npool;
     int ok;
 } jit_state;
 
@@ -74,6 +81,7 @@ typedef struct {
     uint32_t *end;
     int overflow;
     unsigned icount_target, icount_done;  /* guest instructions to have counted before a helper call */
+    int mem_mode;                         /* fast TLB set: 0 EL0, 1 EL1, 2 EL1 with PAN */
 } emitter;
 
 static void emit(emitter *e, uint32_t w)
@@ -107,20 +115,43 @@ static void mov_imm(emitter *e, int d, uint64_t v)
 static void load_nzcv(emitter *e)  { ldr_w(e, T4, HC, OFF_NZCV); emit(e, 0xD51B4200u | T4); }   /* msr nzcv, x13 */
 static void store_nzcv(emitter *e) { emit(e, 0xD53B4200u | T4); str_w(e, T4, HC, OFF_NZCV); }  /* mrs x13, nzcv */
 
-static void call(emitter *e, const void *fn)
+/* count this instruction and the ones before it (a helper may raise a guest exception) */
+static void count(emitter *e)
 {
-    /* the helper may raise a guest exception: count this instruction and the ones before it */
     if (e->icount_target > e->icount_done) {
         ldr_x(e, 17, HC, OFF_ICOUNT);
         emit(e, 0x91000000u | (e->icount_target - e->icount_done) << 10 | 17u << 5 | 17u);   /* add x17, x17, #d */
         str_x(e, 17, HC, OFF_ICOUNT);
         e->icount_done = e->icount_target;
     }
+}
+
+static void call(emitter *e, const void *fn)
+{
+    count(e);
     mov_imm(e, 16, (uint64_t)(uintptr_t)fn);
     emit(e, 0xD63F0200u);                                                         /* blr x16 */
 }
 
 static void set_pc(emitter *e, uint64_t pc) { mov_imm(e, T0, pc); str_x(e, T0, HC, OFF_PC); }
+
+static void epilogue(emitter *e);
+
+/* A block exit to a constant guest PC. The first word is a branch to the stub that
+ * returns to the dispatcher; the dispatcher may later patch it into a direct branch to
+ * the target block ("chaining"). The stub tells the dispatcher which word to patch. */
+static void exit_to(emitter *e, uint64_t target)
+{
+    uint32_t *site = e->p;
+    emit(e, 0x14000001u);                                     /* b stub (next word) */
+    set_pc(e, target);
+    /* m->jit_exit_site = address of the site in the executable view */
+    uint64_t rx = (uint64_t)(uintptr_t)(e->j->code + (site - e->j->wcode));
+    mov_imm(e, T0, rx);
+    mov_imm(e, T1, (uint64_t)offsetof(wd_machine, jit_exit_site));
+    emit(e, 0xF8206800u | (uint32_t)T1 << 16 | (uint32_t)HM << 5 | (uint32_t)T0);    /* str x9, [x20, x10] */
+    epilogue(e);
+}
 
 static void prologue(emitter *e)
 {
@@ -336,15 +367,54 @@ static int tr_dp(emitter *e, uint32_t sp_off, uint32_t insn, uint64_t pc)
 
 /* ---------------------------------------------------------------- loads and stores */
 
-/* x0 = m, x1 = address, x2 = size, x3 = value */
+/* One access with the address in x12 (store value in x3, load result in x0): an inline
+ * lookup in the interpreter's fast TLB for aligned RAM accesses, the helper otherwise.
+ * x12 and x14 survive (x14 holds the first value of a load pair). */
+static void mem_access(emitter *e, int load, int size)
+{
+    static const uint32_t ld[4] = { 0x386969A0u, 0x786969A0u, 0xB86969A0u, 0xF86969A0u };   /* ldr* x0, [x13, x9] */
+    static const uint32_t st[4] = { 0x382969A3u, 0x782969A3u, 0xB82969A3u, 0xF82969A3u };   /* str* x3, [x13, x9] */
+    count(e);
+    uint32_t *to_slow[2];
+    int nslow = 0;
+    if (size > 1) {
+        emit(e, 0xF240019Fu | (uint32_t)(size == 2 ? 0 : size == 4 ? 1 : 2) << 10);         /* tst x12, #size-1 */
+        to_slow[nslow++] = e->p;
+        emit(e, 0x54000001u);                                                              /* b.ne slow */
+    }
+    emit(e, 0xD34CFD89u);                                                                  /* lsr x9, x12, #12 */
+    emit(e, 0x92401D2Au);                                                                  /* and x10, x9, #0xff */
+    size_t off = load ? offsetof(wd_machine, ftlb_r) : offsetof(wd_machine, ftlb_w);
+    off += (size_t)e->mem_mode * FTLB_SIZE * 16;
+    mov_imm(e, T2, (uint64_t)off);
+    emit(e, 0x8B0B028Bu);                                                                  /* add x11, x20, x11 */
+    emit(e, 0x8B0A116Bu);                                                                  /* add x11, x11, x10, lsl #4 */
+    ldr_x(e, T4, T2, 0);
+    emit(e, 0xEB0901BFu);                                                                  /* cmp x13, x9 */
+    to_slow[nslow++] = e->p;
+    emit(e, 0x54000001u);                                                                  /* b.ne slow */
+    ldr_x(e, T4, T2, 8);
+    emit(e, 0x92402D89u);                                                                  /* and x9, x12, #0xfff */
+    int lg = size == 1 ? 0 : size == 2 ? 1 : size == 4 ? 2 : 3;
+    emit(e, load ? ld[lg] : st[lg]);
+    uint32_t *to_done = e->p;
+    emit(e, 0x14000000u);                                                                  /* b done */
+    for (int i = 0; i < nslow; i++) *to_slow[i] |= (uint32_t)((e->p - to_slow[i]) & 0x7FFFF) << 5;
+    emit(e, 0xA9BF3BECu);                                                                  /* stp x12, x14, [sp, #-16]! */
+    mov_reg(e, 1, T3);
+    mov_reg(e, 0, HM);
+    mov_imm(e, 2, (uint64_t)size);
+    call(e, load ? (const void *)h_load : (const void *)h_store);
+    emit(e, 0xA8C13BECu);                                                                  /* ldp x12, x14, [sp], #16 */
+    *to_done |= (uint32_t)(e->p - to_done) & 0x3FFFFFF;
+}
+
 static void tr_access(emitter *e, int load, int size, int sign, int dst64, int rt, int addr_reg, uint32_t sp_off)
 {
     (void)sp_off;
-    mov_reg(e, 1, addr_reg);
-    mov_reg(e, 0, HM);
-    mov_imm(e, 2, (uint64_t)size);
+    if (addr_reg != T3) mov_reg(e, T3, addr_reg);
     if (load) {
-        call(e, (const void *)h_load);
+        mem_access(e, 1, size);
         if (rt != 31) {
             if (sign) {
                 /* sxtb/sxth/sxtw into x0 (64) or w0 (32) */
@@ -357,7 +427,7 @@ static void tr_access(emitter *e, int load, int size, int sign, int dst64, int r
     } else {
         if (rt == 31) mov_imm(e, 3, 0);
         else ldr_x(e, 3, HC, OFF_X(rt));
-        call(e, (const void *)h_store);
+        mem_access(e, 0, size);
     }
 }
 
@@ -434,33 +504,25 @@ static int tr_ldst(emitter *e, uint32_t sp_off, uint32_t insn, uint64_t pc)
         if (mode == 1) mov_reg(e, addr, hb);
         else add_imm64(e, addr, hb, off);
         set_pc(e, pc);
+        if (addr != T3) mov_reg(e, T3, addr);
         if (L) {
-            /* both loads first (into the stack slot pair of x19/x20 frame), then the registers:
-             * a fault on the second access must leave the registers unchanged */
-            mov_reg(e, 1, addr); mov_reg(e, 0, HM); mov_imm(e, 2, (uint64_t)b);
-            emit(e, 0xA9BF33EBu);                               /* stp x11, x12, [sp, #-16]! */
-            call(e, (const void *)h_load);
-            emit(e, 0xA8C133EBu);                               /* ldp x11, x12, [sp], #16 */
-            mov_reg(e, T2, 0);
-            add_imm64(e, 1, addr, b); mov_reg(e, 0, HM); mov_imm(e, 2, (uint64_t)b);
-            emit(e, 0xA9BF33EBu);
-            call(e, (const void *)h_load);
-            emit(e, 0xA8C133EBu);
+            /* both loads first: a fault on the second access leaves the registers unchanged */
+            mem_access(e, 1, b);
+            emit(e, 0xAA0003EEu);                               /* mov x14, x0 */
+            add_imm64(e, T3, T3, b);
+            mem_access(e, 1, b);
             if (sign) {
-                emit(e, 0x93407C00u | (uint32_t)T2 << 5 | (uint32_t)T2);       /* sxtw x11, w11 */
-                emit(e, 0x93407C00u);                                            /* sxtw x0, w0 */
+                emit(e, 0x93407C00u | 14u << 5 | 14u);          /* sxtw x14, w14 */
+                emit(e, 0x93407C00u);                           /* sxtw x0, w0 */
             }
-            if (rt != 31) str_x(e, T2, HC, OFF_X(rt));
+            if (rt != 31) str_x(e, 14, HC, OFF_X(rt));
             if (rt2 != 31) str_x(e, 0, HC, OFF_X(rt2));
         } else {
-            mov_reg(e, 1, addr); mov_reg(e, 0, HM); mov_imm(e, 2, (uint64_t)b);
             if (rt == 31) mov_imm(e, 3, 0); else ldr_x(e, 3, HC, OFF_X(rt));
-            emit(e, 0xA9BF33EBu);
-            call(e, (const void *)h_store);
-            emit(e, 0xA8C133EBu);
-            add_imm64(e, 1, addr, b); mov_reg(e, 0, HM); mov_imm(e, 2, (uint64_t)b);
+            mem_access(e, 0, b);
+            add_imm64(e, T3, T3, b);
             if (rt2 == 31) mov_imm(e, 3, 0); else ldr_x(e, 3, HC, OFF_X(rt2));
-            call(e, (const void *)h_store);
+            mem_access(e, 0, b);
         }
         if (wbk) {
             ldr_x(e, T0, HC, rn == 31 ? sp_off : OFF_X(rn));
@@ -475,22 +537,32 @@ static int tr_ldst(emitter *e, uint32_t sp_off, uint32_t insn, uint64_t pc)
 
 /* ---------------------------------------------------------------- branches (end a block) */
 
+static int is_branch(uint32_t insn)
+{
+    return (insn & 0x7C000000u) == 0x14000000u || (insn & 0xFF000010u) == 0x54000000u ||
+           (insn & 0x7E000000u) == 0x34000000u || (insn & 0x7E000000u) == 0x36000000u ||
+           ((insn & 0xFF9FFC1Fu) == 0xD61F0000u && ((insn >> 21) & 3) != 3);
+}
+
 static int tr_branch(emitter *e, uint32_t sp_off, uint32_t insn, uint64_t pc)
 {
     (void)sp_off;
     if ((insn & 0x7C000000u) == 0x14000000u) {                 /* B, BL */
         int64_t off = (int64_t)((uint64_t)(insn & 0x03FFFFFFu) << 38) >> 36;
         if (insn >> 31) { mov_imm(e, T0, pc + 4); str_x(e, T0, HC, OFF_X(30)); }
-        set_pc(e, pc + (uint64_t)off);
+        exit_to(e, pc + (uint64_t)off);
         return 1;
     }
     if ((insn & 0xFF000010u) == 0x54000000u) {                 /* B.cond */
         int64_t off = (int64_t)((uint64_t)((insn >> 5) & 0x7FFFF) << 45) >> 43;
-        mov_imm(e, T0, pc + (uint64_t)off);
-        mov_imm(e, T1, pc + 4);
+        int cond = insn & 15;
+        if (cond >= 14) { exit_to(e, pc + (uint64_t)off); return 1; }
         load_nzcv(e);
-        emit(e, 0x9A800000u | (uint32_t)T1 << 16 | (insn & 15) << 12 | (uint32_t)T0 << 5 | (uint32_t)T0);  /* csel */
-        str_x(e, T0, HC, OFF_PC);
+        uint32_t *skip = e->p;
+        emit(e, 0x54000000u | (uint32_t)(cond ^ 1));           /* b.<not cond> not_taken (patched) */
+        exit_to(e, pc + (uint64_t)off);
+        if (!e->overflow) *skip |= (uint32_t)((e->p - skip) & 0x7FFFF) << 5;
+        exit_to(e, pc + 4);
         return 1;
     }
     if ((insn & 0x7E000000u) == 0x34000000u || (insn & 0x7E000000u) == 0x36000000u) {   /* CB(N)Z, TB(N)Z */
@@ -498,14 +570,13 @@ static int tr_branch(emitter *e, uint32_t sp_off, uint32_t insn, uint64_t pc)
         int64_t off = tb ? (int64_t)((uint64_t)((insn >> 5) & 0x3FFF) << 50) >> 48
                          : (int64_t)((uint64_t)((insn >> 5) & 0x7FFFF) << 45) >> 43;
         int rt = insn & 31;
-        mov_imm(e, T0, pc + 4);
-        mov_imm(e, T1, pc + (uint64_t)off);
         if (rt == 31) mov_imm(e, T2, 0); else ldr_x(e, T2, HC, OFF_X(rt));
-        /* same branch on the host register, skipping one instruction: mov x9, x10 */
-        uint32_t w = (insn & ~((tb ? 0x3FFFu : 0x7FFFFu) << 5) & ~31u) | (uint32_t)T2 | 2u << 5;
-        emit(e, w ^ (1u << 24));                                /* inverted: skip the move when not taken */
-        mov_reg(e, T0, T1);
-        str_x(e, T0, HC, OFF_PC);
+        uint32_t fieldmask = (tb ? 0x3FFFu : 0x7FFFFu) << 5;
+        uint32_t *skip = e->p;
+        emit(e, ((insn & ~fieldmask & ~31u) | (uint32_t)T2) ^ (1u << 24));   /* inverted: to not_taken */
+        exit_to(e, pc + (uint64_t)off);
+        if (!e->overflow) *skip |= (uint32_t)((e->p - skip) & (tb ? 0x3FFF : 0x7FFFF)) << 5;
+        exit_to(e, pc + 4);
         return 1;
     }
     if ((insn & 0xFF9FFC1Fu) == 0xD61F0000u) {                 /* BR, BLR, RET */
@@ -514,6 +585,7 @@ static int tr_branch(emitter *e, uint32_t sp_off, uint32_t insn, uint64_t pc)
         if (rn == 31) mov_imm(e, T0, 0); else ldr_x(e, T0, HC, OFF_X(rn));
         if (opc == 1) { mov_imm(e, T1, pc + 4); str_x(e, T1, HC, OFF_X(30)); }
         str_x(e, T0, HC, OFF_PC);
+        epilogue(e);
         return 1;
     }
     return 0;
@@ -528,6 +600,9 @@ static jit_state *jit_get(wd_machine *m)
     j = calloc(1, sizeof *j);
     if (!j) return NULL;
     m->jit = j;
+    j->pool = calloc(POOL, sizeof *j->pool);
+    m->code_page = calloc((size_t)(m->ram_size >> 12) + 1, 1);
+    if (!j->pool || !m->code_page) return NULL;
     /* one read-write-execute mapping where the system allows it; otherwise (W^X policies)
      * a memfd mapped twice, writable and executable */
     void *p = mmap(NULL, CACHE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -556,53 +631,75 @@ static jit_state *jit_get(wd_machine *m)
     return j;
 }
 
-static void jit_reset(jit_state *j)
+static void jit_reset(wd_machine *m, jit_state *j)
 {
     memset(j->bucket, 0, sizeof j->bucket);
+    memset(j->page_head, 0, sizeof j->page_head);
     j->npool = 0;
     j->used = 0;
+    if (m->code_page) memset(m->code_page, 0, (size_t)(m->ram_size >> 12));
 }
 
-static block *new_block(jit_state *j)
+static block *new_block(wd_machine *m, jit_state *j)
 {
-    if (j->npool == j->cappool) {
-        size_t cap = j->cappool ? j->cappool * 2 : 4096;
-        if (cap > (1u << 20)) return NULL;
-        block *n = realloc(j->pool, cap * sizeof *n);
-        if (!n) return NULL;
-        if (n != j->pool) {
-            /* pointers into the pool changed: rebuild the buckets */
-            j->pool = n;
-            j->cappool = cap;
-            memset(j->bucket, 0, sizeof j->bucket);
-            for (size_t i = 0; i < j->npool; i++) {
-                block *b = &j->pool[i];
-                unsigned h = (unsigned)((b->pc >> 2) ^ (b->pc >> 18)) & (NBUCKET - 1);
-                b->next = j->bucket[h];
-                j->bucket[h] = b;
-            }
+    if (j->npool == POOL) jit_reset(m, j);
+    return &j->pool[j->npool++];
+}
+
+/* A RAM page now holds translated code: its writes must leave the fast path. */
+static void mark_code_page(wd_machine *m, uint64_t page)
+{
+    if (m->code_page[page]) return;
+    m->code_page[page] = 1;
+    uint8_t *base = m->ram + (page << 12);
+    for (int k = 0; k < 3; k++)
+        for (unsigned i = 0; i < FTLB_SIZE; i++)
+            if (m->ftlb_w[k][i].host == base) m->ftlb_w[k][i].vpn = ~0ULL;
+}
+
+/* Guest memory of a code page was written: drop every block translated from it. */
+void wd_jit_page_written(wd_machine *m, uint64_t page)
+{
+    jit_state *j = m->jit;
+    if (!j || !m->code_page || page >= (m->ram_size >> 12)) return;
+    block **pp = &j->page_head[page & (NPAGEHASH - 1)];
+    while (*pp) {
+        block *b = *pp;
+        if (b->page == page) {
+            b->pc = ~0ULL;                       /* never found again; chains into it come from */
+            *pp = b->next_page;                  /* blocks of the same page, dropped as well */
         } else {
-            j->cappool = cap;
+            pp = &b->next_page;
         }
     }
-    return &j->pool[j->npool++];
+    m->code_page[page] = 0;
+    m->irq_dirty = 1;                            /* leave translated code at the next check */
 }
 
 static block *translate(wd_machine *m, jit_state *j, uint64_t pc, const uint8_t *host, uint32_t mode)
 {
-    if (j->used + 4096 > j->cap) jit_reset(j);
-    block *b = new_block(j);
-    if (!b) { jit_reset(j); b = new_block(j); if (!b) return NULL; }
+    if (j->used + 4096 > j->cap) jit_reset(m, j);
+    block *b = new_block(m, j);
     b->pc = pc;
     b->host = host;
     b->mode = mode;
     b->n = 0;
     b->fn = NULL;
+    b->next = b->next_page = NULL;
+    b->page = host >= m->ram && host < m->ram + m->ram_size ? (uint64_t)(host - m->ram) >> 12 : NO_PAGE;
     uint32_t sp_off = (mode & 1) && (mode & 2) ? OFF_SP1 : OFF_SP0;
 
-    emitter e = { j, j->wcode + j->used, j->wcode + j->cap, 0, 0, 0 };
+    emitter e = { j, j->wcode + j->used, j->wcode + j->cap, 0, 0, 0, (int)(mode >> 2) };
     uint32_t *start = e.p;
     prologue(&e);
+    /* body (also the entry of chained branches): stop when the slice is used up */
+    mov_imm(&e, T1, (uint64_t)offsetof(wd_machine, jit_left));
+    emit(&e, 0xF8606800u | (uint32_t)T1 << 16 | (uint32_t)HM << 5 | (uint32_t)T0);   /* ldr x9, [x20, x10] */
+    uint32_t *nslot = e.p;
+    emit(&e, 0xF1000000u | (uint32_t)T0 << 5 | (uint32_t)T0);                   /* subs x9, x9, #n (patched) */
+    uint32_t *bail = e.p;
+    emit(&e, 0x5400000Bu);                                                       /* b.lt bail (patched) */
+    emit(&e, 0xF8206800u | (uint32_t)T1 << 16 | (uint32_t)HM << 5 | (uint32_t)T0);   /* str x9, [x20, x10] */
     int ended = 0;
     uint64_t p = pc;
     unsigned room = (unsigned)((0x1000 - (pc & 0xFFF)) / 4);
@@ -619,7 +716,9 @@ static block *translate(wd_machine *m, jit_state *j, uint64_t pc, const uint8_t 
         uint32_t *mark = e.p;
         unsigned saved_done = e.icount_done;
         e.icount_target = b->n + 1;
-        if (tr_branch(&e, sp_off, insn, p)) {
+        if (is_branch(insn)) {
+            count(&e);                               /* the whole block, branch included */
+            tr_branch(&e, sp_off, insn, p);
             b->words[b->n++] = insn;
             ended = 1;
             break;
@@ -637,14 +736,20 @@ static block *translate(wd_machine *m, jit_state *j, uint64_t pc, const uint8_t 
         b->n = 0;
         return b;                                    /* not translatable: interpreter */
     }
-    if (!ended) set_pc(&e, pc + 4ULL * b->n);
-    /* the remaining instruction count */
-    if (b->n > e.icount_done) {
-        ldr_x(&e, T0, HC, OFF_ICOUNT);
-        add_imm64(&e, T0, T0, (int64_t)(b->n - e.icount_done));
-        str_x(&e, T0, HC, OFF_ICOUNT);
+    if (!ended) {
+        /* fell through: count, then a chainable exit to the next instruction */
+        if (b->n > e.icount_done) {
+            ldr_x(&e, T0, HC, OFF_ICOUNT);
+            add_imm64(&e, T0, T0, (int64_t)(b->n - e.icount_done));
+            str_x(&e, T0, HC, OFF_ICOUNT);
+        }
+        exit_to(&e, pc + 4ULL * b->n);
     }
+    /* slice used up before the block ran: back to the dispatcher at its first instruction */
+    if (!e.overflow) *bail |= (uint32_t)((e.p - bail) & 0x7FFFF) << 5;
+    set_pc(&e, pc);
     epilogue(&e);
+    if (!e.overflow) *nslot |= b->n << 10;
     if (e.overflow) { b->n = 0; return b; }
     size_t words = (size_t)(e.p - start);
     if (j->wcode != j->code)
@@ -670,26 +775,57 @@ uint64_t wd_jit_run(wd_machine *m, uint64_t max)
             (void)wd_fetch(m, pc);                       /* fills the fetch cache or raises the abort */
         }
         const uint8_t *host = m->fetch_host + (pc & 0xFFF);
-        uint32_t mode = (uint32_t)c->el | (uint32_t)c->spsel << 1;
+        uint32_t mode = (uint32_t)c->el | (uint32_t)c->spsel << 1 | (uint32_t)wd_mem_mode(m) << 2;
         unsigned h = (unsigned)((pc >> 2) ^ (pc >> 18)) & (NBUCKET - 1);
         block *b;
         for (b = j->bucket[h]; b; b = b->next)
             if (b->pc == pc && b->host == host && b->mode == mode) break;
-        if (b && b->n && memcmp(b->words, host, 4u * b->n)) b = NULL;   /* code changed */
+        /* code outside RAM is not write-tracked: compare it before running */
+        if (b && b->n && b->page == NO_PAGE && memcmp(b->words, host, 4u * b->n)) b = NULL;
         if (!b) {
             b = translate(m, j, pc, host, mode);
             if (!b) break;
             b->next = j->bucket[h];
             j->bucket[h] = b;
+            if (b->n && b->page != NO_PAGE) {
+                block **ph = &j->page_head[b->page & (NPAGEHASH - 1)];
+                b->next_page = *ph;
+                *ph = b;
+                mark_code_page(m, b->page);
+            }
         }
         if (!b->n || b->n > max - done) break;
         uint64_t before = c->icount;
+        m->jit_left = (int64_t)(max - done);
+        m->jit_exit_site = NULL;
         b->fn(m, c);
         if (m->trace == 2) wd_state_trace(m);
-        uint64_t ran = c->icount - before;             /* fewer than b->n on an early exit */
+        uint64_t ran = c->icount - before;             /* blocks chained, or an early exit */
         done += ran;
         m->budget -= ran;
         if (m->stop >= 0 || m->irq_dirty || m->wfi) break;
+        /* chain: the exit just taken jumps straight to the next block from now on, when both
+         * come from the same RAM page (same translation, invalidated together) */
+        uint32_t *site = m->jit_exit_site;
+        if (site && b->page != NO_PAGE && m->trace != 2) {
+            uint64_t npc = c->pc;
+            if ((npc >> 12) == (pc >> 12)) {
+                const uint8_t *nhost = m->fetch_host + (npc & 0xFFF);
+                unsigned nh = (unsigned)((npc >> 2) ^ (npc >> 18)) & (NBUCKET - 1);
+                block *t;
+                for (t = j->bucket[nh]; t; t = t->next)
+                    if (t->pc == npc && t->host == nhost && t->mode == mode) break;
+                /* the source block found by the exit may have been invalidated meanwhile */
+                if (t && t->n && t->page == b->page && b->pc != ~0ULL && (npc >> 12) == m->fetch_vpn) {
+                    uint32_t *target = (uint32_t *)(void *)t->fn + ENTRY_SKIP;
+                    int64_t d = target - site;
+                    uint32_t *wsite = j->wcode + (site - j->code);
+                    *wsite = 0x14000000u | ((uint32_t)d & 0x3FFFFFF);
+                    if (j->wcode != j->code) __builtin___clear_cache((char *)wsite, (char *)(wsite + 1));
+                    __builtin___clear_cache((char *)site, (char *)(site + 1));
+                }
+            }
+        }
     }
     return done;
 }
@@ -702,6 +838,8 @@ void wd_jit_free(wd_machine *m)
     if (j->wcode && j->wcode != j->code) munmap(j->wcode, CACHE_SIZE);
     free(j->pool);
     free(j);
+    free(m->code_page);
+    m->code_page = NULL;
     m->jit = NULL;
 }
 
@@ -716,6 +854,7 @@ int wd_jit_active(wd_machine *m)
 #else
 
 uint64_t wd_jit_run(wd_machine *m, uint64_t max) { (void)m; (void)max; return 0; }
+void wd_jit_page_written(wd_machine *m, uint64_t page) { (void)m; (void)page; }
 void wd_jit_free(wd_machine *m) { (void)m; }
 int wd_jit_available(void) { return 0; }
 int wd_jit_active(wd_machine *m) { (void)m; return 0; }

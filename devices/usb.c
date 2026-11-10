@@ -60,7 +60,8 @@ int wd_usb_control(wd_usbdev *d, const uint8_t *setup, uint8_t *data)
     case 0x0009:                                              /* SET_CONFIGURATION */
         if (value > 1) break;
         d->configuration = value;
-        d->alt_setting = 0;
+        memset(d->alt, 0, sizeof d->alt);
+        if (d->set_interface) d->set_interface(d, -1, 0);
         memset(d->halted_in, 0, sizeof d->halted_in);
         memset(d->halted_out, 0, sizeof d->halted_out);
         r = 0;
@@ -86,8 +87,11 @@ int wd_usb_control(wd_usbdev *d, const uint8_t *setup, uint8_t *data)
         r = 0;
         break;
     }
-    case 0x810A: data[0] = (uint8_t)d->alt_setting; r = 1; break;   /* GET_INTERFACE */
-    case 0x010B: if (value == 0) { d->alt_setting = 0; r = 0; } break;   /* SET_INTERFACE */
+    case 0x810A: data[0] = (uint8_t)(index < 4 ? d->alt[index] : 0); r = 1; break;   /* GET_INTERFACE */
+    case 0x010B:                                              /* SET_INTERFACE */
+        if (index >= 4) break;
+        if (d->set_interface ? d->set_interface(d, index, value) == 0 : value == 0) { d->alt[index] = value; r = 0; }
+        break;
     default:
         if (d->class_control) r = d->class_control(d, setup, data);
         break;

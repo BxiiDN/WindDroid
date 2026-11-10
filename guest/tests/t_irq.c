@@ -84,6 +84,11 @@ int main(void)
     CHECK(elapsed < 5 * TICK + 5000);
     CHECK_EQ(rpr_in_handler, 0x80);
     CHECK_EQ(READ_SYS(s3_0_c12_c11_3), 0xFF);       /* idle running priority */
+
+    /* 1b. the same while spinning instead of waiting: interrupts must still arrive */
+    __asm__ volatile("msr daifclr, #2" ::: "memory");
+    while (ticks < 8) {}
+    __asm__ volatile("msr daifset, #2" ::: "memory");
     WRITE_SYS(cntv_ctl_el0, 0);
 
     /* 2. timer status bits */

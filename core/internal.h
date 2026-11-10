@@ -90,6 +90,22 @@ typedef struct {
     int lpi_npend;
 } wd_gic;
 
+/* per-CPU part of the GIC (SGIs/PPIs, CPU interface, redistributor), banked on CPU switches */
+typedef struct {
+    uint8_t enabled[32], latch[32], line[32], active[32], edge[32], group[32], prio[32];
+    uint8_t pmr, bpr0, bpr1, igrpen0, igrpen1;
+    uint32_t ctlr;
+    uint8_t ap_prio[32];
+    uint16_t ap_id[32];
+    int ap_n;
+    uint32_t rwaker, rctlr;
+    uint64_t propbaser, pendbaser;
+    uint8_t lpi_pend[GIC_NLPI];
+    int lpi_npend;
+} wd_gic_cpu;
+
+#define WD_MAX_CPUS 8
+
 /* ---------------------------------------------------------------- ITS */
 
 typedef struct { uint32_t devid, eventid, pintid; uint16_t icid; } wd_its_map;
@@ -103,6 +119,7 @@ typedef struct {
     wd_its_map *map;
     int nmap, cap;
     uint8_t coll_valid[256];
+    uint8_t coll_target[256];    /* processor number of each collection */
 } wd_its;
 
 /* ---------------------------------------------------------------- UART */
@@ -203,6 +220,13 @@ struct wd_machine {
     wd_cpu cpu;
     wd_gic gic;
     wd_its its;
+    /* SMP: m->cpu and the banked GIC state belong to CPU 'cur'; the others wait here */
+    int ncpu, cur;
+    wd_cpu cpus[WD_MAX_CPUS];
+    wd_gic_cpu gicp[WD_MAX_CPUS];
+    uint8_t cpu_on[WD_MAX_CPUS], cpu_wfi[WD_MAX_CPUS];
+    uint64_t slice_end;
+    int yield;
     wd_uart uart;
 
     uint8_t *ram;
@@ -230,6 +254,11 @@ struct wd_machine {
     int no_fast;             /* use only the general decoder (tests) */
     int use_jit;             /* block translation on AArch64 hosts */
     void *jit;
+    int64_t jit_left;        /* instructions translated code may still run */
+    uint32_t *jit_exit_site; /* chainable exit taken by the last block */
+    uint8_t *code_page;      /* per RAM page: holds translated code (writes are tracked) */
+    void *usbnet;            /* USB network adapter (wd_usbdev), polled from the run loop */
+    uint64_t net_next;       /* icount of the next network poll */
     uint64_t idle_ns;
     int wfi;
 
@@ -257,6 +286,15 @@ void wd_state_trace(wd_machine *m);
 uint64_t wd_jit_run(wd_machine *m, uint64_t max);
 void wd_jit_free(wd_machine *m);
 int wd_jit_available(void);
+void wd_jit_page_written(wd_machine *m, uint64_t page);
+/* a write of [pa, pa + len) in RAM done outside the CPU's store path (DMA) */
+static inline void wd_code_write_check(wd_machine *m, uint64_t pa, size_t len)
+{
+    if (!m->code_page || pa < WD_RAM_BASE || pa - WD_RAM_BASE >= m->ram_size || !len) return;
+    uint64_t first = (pa - WD_RAM_BASE) >> 12, last = (pa - WD_RAM_BASE + len - 1) >> 12;
+    for (uint64_t p = first; p <= last && p < (m->ram_size >> 12); p++)
+        if (m->code_page[p]) wd_jit_page_written(m, p);
+}
 void wd_take_irq(wd_machine *m);
 void wd_undef(wd_machine *m);
 _Noreturn void wd_exception(wd_machine *m, uint32_t ec, uint32_t iss, uint64_t far,
@@ -352,6 +390,11 @@ uint64_t wd_gic_hppir(wd_machine *m);
 uint64_t wd_gic_rpr(wd_machine *m);
 void wd_gic_sgi(wd_machine *m, uint64_t val);
 void wd_gic_set_lpi(wd_machine *m, uint32_t intid);
+void wd_gic_set_lpi_cpu(wd_machine *m, int cpu, uint32_t intid);
+void wd_gic_bank_save(wd_machine *m, int cpu);
+void wd_gic_bank_load(wd_machine *m, int cpu);
+void wd_gic_cpu_reset(wd_gic_cpu *g);
+void wd_start_cpu(wd_machine *m, int k, uint64_t entry, uint64_t context);
 /* its.c */
 uint64_t wd_its_read(wd_machine *m, uint64_t off, int size);
 void wd_its_write(wd_machine *m, uint64_t off, int size, uint64_t val);
@@ -451,6 +494,8 @@ static inline void wd_write(wd_machine *m, uint64_t va, int size, uint64_t val, 
     }
     wd_write_slow(m, va, size, val, unpriv);
 }
+
+void wd_net_poll(wd_machine *m);
 
 #endif
 
