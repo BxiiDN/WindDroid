@@ -41,6 +41,7 @@ wd_machine *wd_create(const wd_config *cfg)
 int wd_set_option(wd_machine *m, const char *name, int value)
 {
     if (!strcmp(name, "no_fast")) { m->no_fast = value; return 0; }
+    if (!strcmp(name, "jit")) { m->use_jit = value && wd_jit_available(); return m->use_jit == !!value ? 0 : -1; }
     return -1;
 }
 
@@ -48,6 +49,7 @@ void wd_destroy(wd_machine *m)
 {
     if (!m) return;
     wd_platform_free(m);
+    wd_jit_free(m);
     free(m->ram);
     free(m);
 }

@@ -41,6 +41,7 @@ TESTS = [
 
 
 FW = os.path.join(ROOT, "firmware")
+JIT_ARGS = []
 
 # UEFI tests: (name, args, expected output, check) - args may use {vars}
 FW_TESTS = [
@@ -90,7 +91,7 @@ def run_fw_tests(vm, quiet, timeout):
         for name, extra, want in FW_TESTS:
             screen = os.path.join(d, "screen.ppm")
             cmd = [vm, "-q", "-r", "-m", "1024", "-n", "60000000000", "-b", os.path.join(FW, "QEMU_EFI.fd"),
-                   "-v", vars_path] + [a.replace("{screen}", screen) for a in extra]
+                   "-v", vars_path] + JIT_ARGS + [a.replace("{screen}", screen) for a in extra]
             t0 = time.time()
             try:
                 p = subprocess.run(cmd, capture_output=True, timeout=timeout)
@@ -177,7 +178,7 @@ def run_disk_tests(vm, quiet, timeout):
             vars_path = os.path.join(d, "vars.fd")
             shutil.copy(os.path.join(FW, "QEMU_VARS.fd"), vars_path)
             cmd = [vm, "-q", "-m", "1024", "-n", "60000000000", "-b", os.path.join(FW, "QEMU_EFI.fd"),
-                   "-v", vars_path]
+                   "-v", vars_path] + JIT_ARGS
             for disk in disks:
                 cmd += disk if isinstance(disk, list) else ["-D", disk]
             cmd += list(extra)
@@ -287,7 +288,11 @@ def main():
     ap.add_argument("--timeout", type=float, default=120)
     ap.add_argument("--no-firmware", action="store_true")
     ap.add_argument("--only-disks", action="store_true", help="run only the UEFI disk and USB tests")
+    ap.add_argument("--jit", action="store_true", help="run every machine with block translation (-J)")
     args = ap.parse_args()
+    if args.jit:
+        global JIT_ARGS
+        JIT_ARGS = ["-J"]
 
     import atexit
     import shutil
@@ -305,7 +310,7 @@ def main():
         return 1 if failed else 0
     for name, extra, want in TESTS:
         elf = os.path.join(args.guests, name + ".elf")
-        cmd = [args.vm, "-q", "-n", "400000000"] + [a.replace("{msidisk}", msidisk) for a in extra] + [elf]
+        cmd = [args.vm, "-q", "-n", "400000000"] + JIT_ARGS + [a.replace("{msidisk}", msidisk) for a in extra] + [elf]
         t0 = time.time()
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)

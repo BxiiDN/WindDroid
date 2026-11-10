@@ -11,6 +11,7 @@ add_library(winddroid SHARED
     ${WD_ROOT}/core/sysreg.c
     ${WD_ROOT}/core/simd.c
     ${WD_ROOT}/core/fpu.c
+    ${WD_ROOT}/core/jit.c
     ${WD_ROOT}/devices/gic.c
     ${WD_ROOT}/devices/its.c
     ${WD_ROOT}/devices/simple.c

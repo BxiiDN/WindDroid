@@ -1,0 +1,28 @@
+name: jit
+
+# Block translator development: everything on a native ARM64 runner with -J.
+on:
+  push:
+    branches: [jit]
+  workflow_dispatch:
+
+jobs:
+  jit:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
+      - name: Build
+        run: make -j4 all build/unit_tests && make -C guest -j4
+      - name: Guest tests with the translator
+        run: python3 tests/run_tests.py --jit --no-firmware
+      - name: Firmware, disk and USB tests with the translator
+        run: python3 tests/run_tests.py --jit --timeout 600
+      - name: Speed
+        if: always()
+        run: |
+          for f in t_cprog_O2 monitor; do
+            echo "== $f"; build/winddroid-vm -i 'bench\npoweroff\n' guest/build/$f.elf | tail -3
+            echo "== $f -J"; build/winddroid-vm -J -i 'bench\npoweroff\n' guest/build/$f.elf | tail -3
+          done

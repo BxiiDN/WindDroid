@@ -1181,7 +1181,14 @@ void wd_cpu_run(wd_machine *m, uint64_t n)
         }
         return;
     }
-    while (n--) {
+    while (n) {
+        if (m->use_jit) {
+            uint64_t k = wd_jit_run(m, n);
+            n -= k;
+            if (m->stop >= 0 || m->irq_dirty || m->wfi) return;
+            if (!n) return;
+        }
+        n--;
         uint64_t pc = c->pc;
         if (__builtin_expect(pc & 3, 0)) wd_exception(m, EC_PC_ALIGN, 0, pc, 1, pc);
         uint32_t insn = fetch_inline(m, pc);
